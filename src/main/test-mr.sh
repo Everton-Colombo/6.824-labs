@@ -6,6 +6,11 @@
 
 RACE=
 
+# this lab predates Go modules: the sources use relative imports
+# (e.g. "../mr"), which module mode forbids. Go 1.16+ enables module
+# mode by default, so force the old GOPATH-mode behavior.
+export GO111MODULE=off
+
 # uncomment this to run the tests with the Go race detector.
 #RACE=-race
 
