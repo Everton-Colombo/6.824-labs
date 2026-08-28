@@ -38,7 +38,7 @@ import (
 // ApplyMsg, but set CommandValid to false for these other uses.
 type ApplyMsg struct {
 	CommandValid bool
-	Command      interface{}
+	Command      any
 	CommandIndex int
 }
 
@@ -58,7 +58,7 @@ type Raft struct {
 	currentTerm   int
 	votedFor      int
 	currentLeader int
-	// log ??
+	log           []any
 	// Volatile state on all servers:
 	commitIndex int
 	lastApplied int
@@ -70,6 +70,10 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	// (2A)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	return rf.currentTerm, rf.currentLeader == rf.me
 }
 
