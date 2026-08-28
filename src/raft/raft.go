@@ -42,6 +42,11 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type LogEntry struct {
+	Command any
+	Term    int
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -58,7 +63,7 @@ type Raft struct {
 	currentTerm   int
 	votedFor      int // -1 for when votedFor = null
 	currentLeader int
-	log           []any
+	log           []LogEntry
 	// Volatile state on all servers:
 	commitIndex int
 	lastApplied int
@@ -151,6 +156,47 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 }
 
+type AppendEntriesArgs struct {
+	Term         int // leader's term
+	LeaderId     int
+	PrevLogIndex int // index of log entry immediatly preceding new ones
+	PrevLogTerm  int // term of PrevLogIndex
+	Entries      []LogEntry
+	LeaderCommit int // leader's commitIndex
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		return
+	}
+
+	// Overwrite conflicting indexes (if any) to match leader entries:
+	nextReadIdx := 0
+	for nextWriteIdx := args.PrevLogIndex + 1; nextWriteIdx < len(rf.log); nextWriteIdx++ {
+		rf.log[nextWriteIdx] = args.Entries[nextReadIdx]
+		nextReadIdx++
+	}
+
+	// Append extra entries (if any)
+	rf.log = append(rf.log, args.Entries[nextReadIdx:]...)
+
+	// Update commitIndex
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+	}
+	// TODO: actually commit the messages
+
+	reply.Success = true
+}
+
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -180,6 +226,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
