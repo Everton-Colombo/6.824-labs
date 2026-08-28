@@ -55,8 +55,9 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// Persistent state on all servers:
-	currentTerm int
-	votedFor    int
+	currentTerm   int
+	votedFor      int
+	currentLeader int
 	// log ??
 	// Volatile state on all servers:
 	commitIndex int
@@ -69,11 +70,7 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	return term, isleader
+	return rf.currentTerm, rf.currentLeader == rf.me
 }
 
 // save Raft's persistent state to stable storage,
