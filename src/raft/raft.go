@@ -56,7 +56,7 @@ type Raft struct {
 
 	// Persistent state on all servers:
 	currentTerm   int
-	votedFor      int
+	votedFor      int // -1 for when votedFor = null
 	currentLeader int
 	log           []any
 	// Volatile state on all servers:
@@ -115,17 +115,40 @@ func (rf *Raft) readPersist(data []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int // Candidate's term
+	CandidateId  int
+	LastLogIndex int // idx of candidate's last log entry
+	LastLogTerm  int // term of candidate's last log entry
+
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
+
+	if args.Term >= rf.currentTerm && rf.votedFor != -1 {
+		var isCandidateAsUpToDate bool
+		if args.LastLogTerm > rf.currentTerm {
+			isCandidateAsUpToDate = true
+		} else if args.LastLogTerm == rf.currentTerm && args.LastLogIndex >= len(rf.log) {
+			isCandidateAsUpToDate = true
+		}
+
+		if isCandidateAsUpToDate {
+			reply.VoteGranted = true
+		}
+	}
+
 }
 
 // example code to send a RequestVote RPC to a server.
