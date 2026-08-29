@@ -59,6 +59,7 @@ const (
 )
 
 const ElectionTimeout = 500 * time.Millisecond
+const HeartBeatTimeout = 150 * time.Millisecond
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -383,7 +384,34 @@ func (rf *Raft) candidateBehavior() {
 }
 
 func (rf *Raft) leaderBehavior() {
+	rf.mu.Lock()
+	if rf.prevRole != Leader ||
+		time.Since(rf.electionResetTs) >= HeartBeatTimeout {
+		rf.prevRole = Leader
+		rf.mu.Unlock()
 
+		// send heartbeat
+		for serverIdx := range rf.peers {
+			if serverIdx == rf.me {
+				continue
+			}
+
+			args := AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: len(rf.log) - 1,
+				PrevLogTerm:  rf.log[len(rf.log)-1].Term,
+				LeaderCommit: rf.commitIndex,
+			}
+			reply := AppendEntriesReply{}
+			go rf.sendAppendEntries(serverIdx, &args, &reply)
+		}
+
+		rf.mu.Lock()
+		rf.electionResetTs = time.Now()
+	}
+
+	rf.mu.Unlock()
 }
 
 // Launches goroutines that perform the server operations
