@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -81,12 +83,18 @@ type Raft struct {
 	lastApplied   int
 	currentLeader int
 
-	currentRole    ServerRole // 0: Follower; 1: Candidate; 2: Leader
-	lastLeaderHbTs time.Time
+	prevRole        ServerRole
+	currentRole     ServerRole // 0: Follower; 1: Candidate; 2: Leader
+	electionResetTs time.Time
 
 	// Volatile state on leaders:
 	nextIndex  []int
 	matchIndex []int
+}
+
+func (rf *Raft) updateRole(newRole ServerRole) {
+	rf.prevRole = rf.currentRole
+	rf.currentRole = newRole
 }
 
 // return currentTerm and whether this server
@@ -163,7 +171,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.currentRole = Follower
+		rf.updateRole(Follower)
 	}
 
 	if args.Term >= rf.currentTerm && rf.votedFor != -1 {
@@ -176,8 +184,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		if isCandidateAsUpToDate {
 			reply.VoteGranted = true
-
-			rf.lastLeaderHbTs = time.Now()
+			rf.electionResetTs = time.Now()
 		}
 	}
 
@@ -203,11 +210,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 
-	rf.lastLeaderHbTs = time.Now()
+	rf.electionResetTs = time.Now()
 
 	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		return
+	}
+
+	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
+		rf.updateRole(Follower)
 	}
 
 	// Overwrite conflicting indexes (if any) to match leader entries:
@@ -289,13 +300,86 @@ func (rf *Raft) applyOp() {
 }
 
 func (rf *Raft) followerBehavior() {
-	if time.Since(rf.lastLeaderHbTs) >= ElectionTimeout {
-		rf.currentRole = Candidate
+	if time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) {
+		rf.updateRole(Candidate)
 	}
 }
 
-func (rf *Raft) candidateBehavior() {
+func (rf *Raft) runElection() {
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.electionResetTs = time.Now()
 
+	var replies []*RequestVoteReply
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+
+		args := RequestVoteArgs{
+			Term:         rf.currentTerm,
+			CandidateId:  rf.me,
+			LastLogIndex: len(rf.log) - 1,
+			LastLogTerm:  rf.log[len(rf.log)-1].Term,
+		}
+		reply := RequestVoteReply{Term: -1}
+		replies = append(replies, &reply)
+		go rf.sendRequestVote(i, &args, &reply)
+	}
+
+	hasMajorityGranted := false
+	hasMajorityRejected := false
+	var votesGranted, votesRejected int
+	for !hasMajorityGranted || !hasMajorityRejected {
+		votesGranted = 1 // Start couting own vote
+		votesRejected = 0
+		for _, reply := range replies {
+			if reply.Term > rf.currentTerm {
+				rf.currentTerm = reply.Term
+				rf.updateRole(Candidate)
+				return
+			}
+
+			if reply.Term > -1 { // if reply received
+				if reply.VoteGranted {
+					votesGranted++
+				} else {
+					votesRejected++
+				}
+			}
+		}
+
+		if votesGranted > len(rf.peers)/2 {
+			hasMajorityGranted = true
+		} else if votesRejected > len(rf.peers)/2 {
+			hasMajorityRejected = true
+		}
+
+		if time.Since(rf.electionResetTs) >= ElectionTimeout {
+			fmt.Printf("[server_%d::runElection()] Election timeout.\n", rf.me)
+			return
+		}
+	}
+
+	fmt.Printf(`[server_%d::runElection()] Election finished. 
+				Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n`,
+		rf.me, votesGranted, votesRejected, rf.currentTerm)
+
+	if hasMajorityGranted {
+		rf.updateRole(Leader)
+		rf.currentLeader = rf.me
+		fmt.Printf("[server_%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
+	}
+
+}
+
+func (rf *Raft) candidateBehavior() {
+	if rf.prevRole == Follower ||
+		time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) { // Run election if has just updated or timed out
+
+		rf.prevRole = Candidate // reset transition trigger
+		rf.runElection()
+	}
 }
 
 func (rf *Raft) leaderBehavior() {
