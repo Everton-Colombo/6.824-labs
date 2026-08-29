@@ -433,7 +433,9 @@ func (rf *Raft) leaderBehavior() {
 }
 
 // Launches goroutines that perform the server operations
-func (rf *Raft) launchOps() {
+func (rf *Raft) launch() {
+	fmt.Printf("[server_%d::launch()] Launching...\n", rf.me)
+
 	// Actions for all server states:
 	go rf.applyOp()
 
@@ -524,6 +526,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.launch()
 
 	return rf
 }
