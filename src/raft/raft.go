@@ -48,11 +48,21 @@ type LogEntry struct {
 	Term    int
 }
 
+type ServerRole int
+
+const (
+	Follower ServerRole = iota
+	Candidate
+	Leader
+)
+
+const ElectionTimeout = 500 * time.Millisecond
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex // Lock to protect shared access to this peer's state
 	applyCond *sync.Cond
-	peers     []*labrpc.ClientEnd // RPC end points of all peers
+	peers     []*labrpc.ClientEnd //  // FollowerRPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
@@ -71,7 +81,7 @@ type Raft struct {
 	lastApplied   int
 	currentLeader int
 
-	currentState   int // 0: Follower; 1: Candidate; 2: Leader
+	currentRole    ServerRole // 0: Follower; 1: Candidate; 2: Leader
 	lastLeaderHbTs time.Time
 
 	// Volatile state on leaders:
@@ -151,6 +161,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.currentRole = Follower
+	}
+
 	if args.Term >= rf.currentTerm && rf.votedFor != -1 {
 		var isCandidateAsUpToDate bool
 		if args.LastLogTerm > rf.currentTerm {
@@ -161,6 +176,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		if isCandidateAsUpToDate {
 			reply.VoteGranted = true
+
+			rf.lastLeaderHbTs = time.Now()
 		}
 	}
 
@@ -185,6 +202,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
+
+	rf.lastLeaderHbTs = time.Now()
 
 	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
@@ -247,36 +266,60 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
+// Function that implements the operations related to applying commited messages.
+// Should be launched as a separate goroutine from the launchOps function()
+func (rf *Raft) applyOp() {
+	rf.applyCond.L.Lock()
+	defer rf.applyCond.L.Unlock()
+
+	for {
+		if rf.commitIndex > rf.lastApplied {
+			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+				rf.lastApplied++
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      rf.log[i].Command,
+					CommandIndex: i,
+				}
+			}
+		} else {
+			rf.applyCond.Wait()
+		}
+	}
+}
+
+func (rf *Raft) followerBehavior() {
+	if time.Since(rf.lastLeaderHbTs) >= ElectionTimeout {
+		rf.currentRole = Candidate
+	}
+}
+
+func (rf *Raft) candidateBehavior() {
+
+}
+
+func (rf *Raft) leaderBehavior() {
+
+}
+
+// Launches goroutines that perform the server operations
 func (rf *Raft) launchOps() {
 	// Actions for all server states:
-	go func() {
-		rf.applyCond.L.Lock()
-		defer rf.applyCond.L.Unlock()
+	go rf.applyOp()
 
+	// Actions for specific server states
+	go func() {
 		for {
-			if rf.commitIndex > rf.lastApplied {
-				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-					rf.lastApplied++
-					rf.applyCh <- ApplyMsg{
-						CommandValid: true,
-						Command:      rf.log[i].Command,
-						CommandIndex: i,
-					}
-				}
-			} else {
-				rf.applyCond.Wait()
+			switch rf.currentRole {
+			case Follower:
+				rf.followerBehavior()
+			case Candidate:
+				rf.candidateBehavior()
+			case Leader:
+				rf.leaderBehavior()
 			}
 		}
 	}()
-
-	// Actions for specific server states
-	for {
-		switch rf.currentState {
-		case 0: // Follower
-		case 1: // Candidate
-		case 2: // Leader
-		}
-	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
