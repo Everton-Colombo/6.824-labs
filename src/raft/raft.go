@@ -285,6 +285,11 @@ func (rf *Raft) applyOp() {
 	defer rf.applyCond.L.Unlock()
 
 	for {
+		if rf.killed() {
+			fmt.Printf("[server_%d::applyOp()] Server killed. Exiting goroutine.\n", rf.me)
+			return
+		}
+
 		if rf.commitIndex > rf.lastApplied {
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
@@ -422,6 +427,11 @@ func (rf *Raft) launchOps() {
 	// Actions for specific server states
 	go func() {
 		for {
+			if rf.killed() {
+				fmt.Printf("[server_%d::launchOps()] Server killed. Exiting goroutine.\n", rf.me)
+				return
+			}
+
 			switch rf.currentRole {
 			case Follower:
 				rf.followerBehavior()
