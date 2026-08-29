@@ -306,12 +306,16 @@ func (rf *Raft) applyOp() {
 }
 
 func (rf *Raft) followerBehavior() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) {
 		rf.updateRole(Candidate)
 	}
 }
 
 func (rf *Raft) runElection() {
+	// rf.mu.Lock() (already aquired by caller)
 	rf.currentTerm++
 	rf.votedFor = rf.me
 	rf.electionResetTs = time.Now()
@@ -332,6 +336,7 @@ func (rf *Raft) runElection() {
 		replies = append(replies, &reply)
 		go rf.sendRequestVote(i, &args, &reply)
 	}
+	rf.mu.Unlock()
 
 	hasMajorityGranted := false
 	hasMajorityRejected := false
@@ -340,11 +345,14 @@ func (rf *Raft) runElection() {
 		votesGranted = 1 // Start couting own vote
 		votesRejected = 0
 		for _, reply := range replies {
+			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.updateRole(Candidate)
+				rf.mu.Unlock()
 				return
 			}
+			rf.mu.Unlock()
 
 			if reply.Term > -1 { // if reply received
 				if reply.VoteGranted {
@@ -361,8 +369,11 @@ func (rf *Raft) runElection() {
 			hasMajorityRejected = true
 		}
 
+		rf.mu.Lock()
 		if time.Since(rf.electionResetTs) >= ElectionTimeout {
 			fmt.Printf("[server_%d::runElection()] Election timeout.\n", rf.me)
+
+			rf.mu.Unlock()
 			return
 		}
 	}
@@ -376,16 +387,18 @@ func (rf *Raft) runElection() {
 		rf.currentLeader = rf.me
 		fmt.Printf("[server_%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
-
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) candidateBehavior() {
+	rf.mu.Lock()
 	if rf.prevRole == Follower ||
 		time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) { // Run election if has just updated or timed out
 
 		rf.prevRole = Candidate // reset transition trigger
 		rf.runElection()
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) leaderBehavior() {
