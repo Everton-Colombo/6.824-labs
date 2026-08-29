@@ -20,6 +20,7 @@ package raft
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"../labrpc"
 )
@@ -49,24 +50,30 @@ type LogEntry struct {
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.Mutex // Lock to protect shared access to this peer's state
+	applyCond *sync.Cond
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
+	applyCh   chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
 	// Persistent state on all servers:
-	currentTerm   int
-	votedFor      int // -1 for when votedFor = null
-	currentLeader int
-	log           []LogEntry
+	currentTerm int
+	votedFor    int // -1 for when votedFor = null
+	log         []LogEntry
 	// Volatile state on all servers:
-	commitIndex int
-	lastApplied int
+	commitIndex   int
+	lastApplied   int
+	currentLeader int
+
+	currentState   int // 0: Follower; 1: Candidate; 2: Leader
+	lastLeaderHbTs time.Time
+
 	// Volatile state on leaders:
 	nextIndex  []int
 	matchIndex []int
@@ -197,8 +204,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Update commitIndex
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		rf.applyCond.Broadcast() // kick off applyier goroutine
 	}
-	// TODO: actually commit the messages
 
 	reply.Success = true
 }
@@ -238,6 +245,38 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
+}
+
+func (rf *Raft) launchOps() {
+	// Actions for all server states:
+	go func() {
+		rf.applyCond.L.Lock()
+		defer rf.applyCond.L.Unlock()
+
+		for {
+			if rf.commitIndex > rf.lastApplied {
+				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+					rf.lastApplied++
+					rf.applyCh <- ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log[i].Command,
+						CommandIndex: i,
+					}
+				}
+			} else {
+				rf.applyCond.Wait()
+			}
+		}
+	}()
+
+	// Actions for specific server states
+	for {
+		switch rf.currentState {
+		case 0: // Follower
+		case 1: // Candidate
+		case 2: // Leader
+		}
+	}
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -296,6 +335,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.votedFor = -1
