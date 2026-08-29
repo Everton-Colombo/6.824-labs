@@ -167,6 +167,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	fmt.Printf("[%d::RequestVote()] Received RequestVote RPC from candidate %d for term %d.\n", rf.me, args.CandidateId, args.Term)
+
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 
@@ -269,6 +271,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	fmt.Printf("[%d::sendRequestVote()] Sending RequestVote RPC to server %d for term %d.\n", rf.me, server, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -286,11 +289,12 @@ func (rf *Raft) applyOp() {
 
 	for {
 		if rf.killed() {
-			fmt.Printf("[server_%d::applyOp()] Server killed. Exiting goroutine.\n", rf.me)
+			fmt.Printf("[%d::applyOp()] Server killed. Exiting goroutine.\n", rf.me)
 			return
 		}
 
 		if rf.commitIndex > rf.lastApplied {
+			fmt.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
 				rf.applyCh <- ApplyMsg{
@@ -309,7 +313,12 @@ func (rf *Raft) followerBehavior() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) {
+	if rf.electionResetTs.IsZero() {
+		rf.electionResetTs = time.Now()
+	}
+
+	if time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(300)) {
+		fmt.Printf("[%d::followerBehavior()] Election timeout. Transitioning to candidate role.\n", rf.me)
 		rf.updateRole(Candidate)
 	}
 }
@@ -379,21 +388,21 @@ func (rf *Raft) runElection() {
 
 		rf.mu.Lock()
 		if time.Since(rf.electionResetTs) >= ElectionTimeout {
-			fmt.Printf("[server_%d::runElection()] Election timeout.\n", rf.me)
+			fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
 
 			rf.mu.Unlock()
 			return
 		}
 	}
 
-	fmt.Printf(`[server_%d::runElection()] Election finished. 
+	fmt.Printf(`[%d::runElection()] Election finished. 
 				Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n`,
 		rf.me, votesGranted, votesRejected, rf.currentTerm)
 
 	if hasMajorityGranted {
 		rf.updateRole(Leader)
 		rf.currentLeader = rf.me
-		fmt.Printf("[server_%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
+		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
 }
@@ -403,6 +412,7 @@ func (rf *Raft) candidateBehavior() {
 	if rf.prevRole == Follower ||
 		time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) { // Run election if has just updated or timed out
 
+		fmt.Printf("[%d::candidateBehavior()] Starting election for term %d.\n", rf.me, rf.currentTerm+1)
 		rf.prevRole = Candidate // reset transition trigger
 		rf.runElection()
 	}
@@ -413,6 +423,9 @@ func (rf *Raft) leaderBehavior() {
 	rf.mu.Lock()
 	if rf.prevRole != Leader ||
 		time.Since(rf.electionResetTs) >= HeartBeatTimeout {
+
+		fmt.Printf("[%d::leaderBehavior()] Sending heartbeat for term %d.\n", rf.me, rf.currentTerm)
+
 		rf.prevRole = Leader
 		rf.mu.Unlock()
 
@@ -449,7 +462,7 @@ func (rf *Raft) leaderBehavior() {
 
 // Launches goroutines that perform the server operations
 func (rf *Raft) launch() {
-	fmt.Printf("[server_%d::launch()] Launching...\n", rf.me)
+	fmt.Printf("[%d::launch()] Launching...\n", rf.me)
 
 	// Actions for all server states:
 	go rf.applyOp()
@@ -458,7 +471,7 @@ func (rf *Raft) launch() {
 	go func() {
 		for {
 			if rf.killed() {
-				fmt.Printf("[server_%d::launchOps()] Server killed. Exiting goroutine.\n", rf.me)
+				fmt.Printf("[%d::launchOps()] Server killed. Exiting goroutine.\n", rf.me)
 				return
 			}
 
