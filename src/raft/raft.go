@@ -327,11 +327,19 @@ func (rf *Raft) runElection() {
 		}
 
 		args := RequestVoteArgs{
-			Term:         rf.currentTerm,
-			CandidateId:  rf.me,
-			LastLogIndex: len(rf.log) - 1,
-			LastLogTerm:  rf.log[len(rf.log)-1].Term,
+			Term:        rf.currentTerm,
+			CandidateId: rf.me,
+			// LastLogIndex: len(rf.log) - 1,
+			// LastLogTerm:  rf.log[len(rf.log)-1].Term,
 		}
+		if len(rf.log) > 0 {
+			args.LastLogIndex = len(rf.log) - 1
+			args.LastLogTerm = rf.log[len(rf.log)-1].Term
+		} else {
+			args.LastLogIndex = -1
+			args.LastLogTerm = -1
+		}
+
 		reply := RequestVoteReply{Term: -1}
 		replies = append(replies, &reply)
 		go rf.sendRequestVote(i, &args, &reply)
@@ -415,11 +423,18 @@ func (rf *Raft) leaderBehavior() {
 			}
 
 			args := AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: len(rf.log) - 1,
-				PrevLogTerm:  rf.log[len(rf.log)-1].Term,
+				Term:     rf.currentTerm,
+				LeaderId: rf.me,
+				// PrevLogIndex: len(rf.log) - 1,
+				// PrevLogTerm:  rf.log[len(rf.log)-1].Term,
 				LeaderCommit: rf.commitIndex,
+			}
+			if len(rf.log) > 0 {
+				args.PrevLogIndex = len(rf.log) - 1
+				args.PrevLogTerm = rf.log[len(rf.log)-1].Term
+			} else {
+				args.PrevLogIndex = -1
+				args.PrevLogTerm = -1
 			}
 			reply := AppendEntriesReply{}
 			go rf.sendAppendEntries(serverIdx, &args, &reply)
