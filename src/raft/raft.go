@@ -390,7 +390,7 @@ func (rf *Raft) runElection() {
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.votedFor = -1
-				rf.updateRole(Candidate)
+				rf.updateRole(Follower)
 				rf.mu.Unlock()
 				return
 			}
