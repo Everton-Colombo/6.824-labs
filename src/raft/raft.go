@@ -230,15 +230,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.resetElectionTimer()
 
+	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
+		rf.updateRole(Follower)
+		rf.currentTerm = args.Term
+	}
+
 	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
 		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
-	}
-
-	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
-		rf.updateRole(Follower)
-		rf.currentTerm = args.Term
 	}
 
 	// Overwrite conflicting indexes (if any) to match leader entries:
