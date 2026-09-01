@@ -19,7 +19,7 @@ package raft
 
 import (
 	"fmt"
-	"math/rand/v2"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +59,7 @@ const (
 )
 
 const ElectionTimeout = 500 * time.Millisecond
+const RandTimeoutRange = 200
 const HeartBeatTimeout = 150 * time.Millisecond
 
 // A Go object implementing a single Raft peer.
@@ -96,6 +97,11 @@ type Raft struct {
 func (rf *Raft) updateRole(newRole ServerRole) {
 	rf.prevRole = rf.currentRole
 	rf.currentRole = newRole
+}
+
+func (rf *Raft) resetElectionTimer() {
+	jitter := time.Duration(rand.Intn(RandTimeoutRange)) * time.Millisecond
+	rf.electionResetTs = time.Now().Add(jitter)
 }
 
 // return currentTerm and whether this server
@@ -164,33 +170,41 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	fmt.Printf("[%d::RequestVote()] Received RequestVote: Term=%d, CandidateId=%d, LastLogIndex=%d, LastLogTerm=%d\n", rf.me, args.Term, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	fmt.Printf("[%d::RequestVote()] Received RequestVote RPC from candidate %d for term %d.\n", rf.me, args.CandidateId, args.Term)
+	// fmt.Printf("[%d::RequestVote()] Passed lock!\n", rf.me)
 
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
 		rf.updateRole(Follower)
+		fmt.Printf("[%d::RequestVote()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
 	}
 
-	if args.Term >= rf.currentTerm && rf.votedFor != -1 {
+	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
 		var isCandidateAsUpToDate bool
 		if args.LastLogTerm > rf.currentTerm {
 			isCandidateAsUpToDate = true
-		} else if args.LastLogTerm == rf.currentTerm && args.LastLogIndex >= len(rf.log) {
+		} else if ((args.LastLogTerm == -1 && len(rf.log) == 0) || args.LastLogTerm == rf.currentTerm) && ((args.LastLogIndex == -1 && len(rf.log) == 0) || args.LastLogIndex >= len(rf.log)) {
 			isCandidateAsUpToDate = true
 		}
 
 		if isCandidateAsUpToDate {
 			reply.VoteGranted = true
-			rf.electionResetTs = time.Now()
+			rf.resetElectionTimer()
+			rf.votedFor = args.CandidateId
+			fmt.Printf("[%d::RequestVote()] Granted vote for %d\n", rf.me, args.CandidateId)
+			return
 		}
 	}
 
+	fmt.Printf("[%d::RequestVote()] Denied vote for %d\n", rf.me, args.CandidateId)
 }
 
 type AppendEntriesArgs struct {
@@ -211,17 +225,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	fmt.Printf("[%d::AppendEntries()] Received AppendEntries RPC from leader %d for term %d.\n", rf.me, args.LeaderId, args.Term)
+
 	reply.Term = rf.currentTerm
 
-	rf.electionResetTs = time.Now()
+	rf.resetElectionTimer()
 
-	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
 	}
 
 	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
 		rf.updateRole(Follower)
+		rf.currentLeader = args.LeaderId
+		rf.currentTerm = args.Term
+		rf.votedFor = -1
 	}
 
 	// Overwrite conflicting indexes (if any) to match leader entries:
@@ -311,23 +331,26 @@ func (rf *Raft) applyOp() {
 
 func (rf *Raft) followerBehavior() {
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	if rf.electionResetTs.IsZero() {
-		rf.electionResetTs = time.Now()
+		fmt.Printf("[%d::followerBehavior()] Election reset timestamp is zero. Setting to current time.\n", rf.me)
+		rf.resetElectionTimer()
 	}
 
-	if time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(300)) {
+	if time.Since(rf.electionResetTs) >= ElectionTimeout {
 		fmt.Printf("[%d::followerBehavior()] Election timeout. Transitioning to candidate role.\n", rf.me)
 		rf.updateRole(Candidate)
 	}
+	rf.mu.Unlock()
+
+	time.Sleep(50 * time.Millisecond)
 }
 
 func (rf *Raft) runElection() {
-	// rf.mu.Lock() (already aquired by caller)
+	rf.mu.Lock()
 	rf.currentTerm++
 	rf.votedFor = rf.me
-	rf.electionResetTs = time.Now()
+	rf.resetElectionTimer()
+	rf.mu.Unlock()
 
 	var replies []*RequestVoteReply
 	for i := 0; i < len(rf.peers); i++ {
@@ -335,6 +358,7 @@ func (rf *Raft) runElection() {
 			continue
 		}
 
+		rf.mu.Lock()
 		args := RequestVoteArgs{
 			Term:        rf.currentTerm,
 			CandidateId: rf.me,
@@ -348,23 +372,24 @@ func (rf *Raft) runElection() {
 			args.LastLogIndex = -1
 			args.LastLogTerm = -1
 		}
+		rf.mu.Unlock()
 
 		reply := RequestVoteReply{Term: -1}
 		replies = append(replies, &reply)
 		go rf.sendRequestVote(i, &args, &reply)
 	}
-	rf.mu.Unlock()
 
 	hasMajorityGranted := false
 	hasMajorityRejected := false
 	var votesGranted, votesRejected int
-	for !hasMajorityGranted || !hasMajorityRejected {
+	for !hasMajorityGranted && !hasMajorityRejected {
 		votesGranted = 1 // Start couting own vote
 		votesRejected = 0
 		for _, reply := range replies {
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
+				rf.votedFor = -1
 				rf.updateRole(Candidate)
 				rf.mu.Unlock()
 				return
@@ -389,34 +414,42 @@ func (rf *Raft) runElection() {
 		rf.mu.Lock()
 		if time.Since(rf.electionResetTs) >= ElectionTimeout {
 			fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
-
+			rf.resetElectionTimer()
 			rf.mu.Unlock()
 			return
 		}
+		rf.mu.Unlock()
+
+		time.Sleep(50 * time.Millisecond)
 	}
 
-	fmt.Printf(`[%d::runElection()] Election finished. 
-				Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n`,
+	fmt.Printf("[%d::runElection()] Election finished. Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n",
 		rf.me, votesGranted, votesRejected, rf.currentTerm)
 
+	rf.mu.Lock()
+	rf.resetElectionTimer()
 	if hasMajorityGranted {
 		rf.updateRole(Leader)
 		rf.currentLeader = rf.me
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
+		rf.mu.Unlock()
 	}
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) candidateBehavior() {
 	rf.mu.Lock()
 	if rf.prevRole == Follower ||
-		time.Since(rf.electionResetTs) >= ElectionTimeout+time.Duration(rand.IntN(100)) { // Run election if has just updated or timed out
+		time.Since(rf.electionResetTs) >= ElectionTimeout {
+		// Run election if has just updated or timed out
+		rf.mu.Unlock()
 
 		fmt.Printf("[%d::candidateBehavior()] Starting election for term %d.\n", rf.me, rf.currentTerm+1)
 		rf.prevRole = Candidate // reset transition trigger
 		rf.runElection()
+	} else {
+		rf.mu.Unlock()
 	}
-	rf.mu.Unlock()
+
 }
 
 func (rf *Raft) leaderBehavior() {
@@ -454,7 +487,7 @@ func (rf *Raft) leaderBehavior() {
 		}
 
 		rf.mu.Lock()
-		rf.electionResetTs = time.Now()
+		rf.resetElectionTimer()
 	}
 
 	rf.mu.Unlock()
