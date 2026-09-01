@@ -437,11 +437,10 @@ func (rf *Raft) candidateBehavior() {
 	rf.mu.Lock()
 	if rf.prevRole == Follower ||
 		time.Since(rf.electionResetTs) >= ElectionTimeout {
+		rf.prevRole = Candidate // reset transition trigger
 		// Run election if has just updated or timed out
 		rf.mu.Unlock()
-
 		fmt.Printf("[%d::candidateBehavior()] Starting election for term %d.\n", rf.me, rf.currentTerm+1)
-		rf.prevRole = Candidate // reset transition trigger
 		rf.runElection()
 	} else {
 		rf.mu.Unlock()
@@ -505,7 +504,11 @@ func (rf *Raft) launch() {
 				return
 			}
 
-			switch rf.currentRole {
+			rf.mu.Lock()
+			currentRole := rf.currentRole
+			rf.mu.Unlock()
+
+			switch currentRole {
 			case Follower:
 				rf.followerBehavior()
 			case Candidate:
