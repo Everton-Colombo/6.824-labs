@@ -426,7 +426,7 @@ func (rf *Raft) runElection() {
 
 	rf.mu.Lock()
 	rf.resetElectionTimer()
-	if hasMajorityGranted {
+	if hasMajorityGranted && rf.currentRole == Candidate {
 		rf.updateRole(Leader)
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
