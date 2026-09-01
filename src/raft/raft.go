@@ -241,7 +241,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.updateRole(Follower)
 		rf.currentLeader = args.LeaderId
 		rf.currentTerm = args.Term
-		rf.votedFor = -1
 	}
 
 	// Overwrite conflicting indexes (if any) to match leader entries:
