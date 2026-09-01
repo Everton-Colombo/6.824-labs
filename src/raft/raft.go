@@ -81,9 +81,8 @@ type Raft struct {
 	votedFor    int // -1 for when votedFor = null
 	log         []LogEntry
 	// Volatile state on all servers:
-	commitIndex   int
-	lastApplied   int
-	currentLeader int
+	commitIndex int
+	lastApplied int
 
 	prevRole        ServerRole
 	currentRole     ServerRole // 0: Follower; 1: Candidate; 2: Leader
@@ -111,7 +110,7 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	return rf.currentTerm, rf.currentLeader == rf.me
+	return rf.currentTerm, rf.currentRole == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -239,7 +238,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
 		rf.updateRole(Follower)
-		rf.currentLeader = args.LeaderId
 		rf.currentTerm = args.Term
 	}
 
@@ -430,7 +428,6 @@ func (rf *Raft) runElection() {
 	rf.resetElectionTimer()
 	if hasMajorityGranted {
 		rf.updateRole(Leader)
-		rf.currentLeader = rf.me
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
@@ -580,8 +577,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCond = sync.NewCond(&rf.mu)
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.currentRole = Follower
 	rf.votedFor = -1
-	rf.currentLeader = -1
 	rf.commitIndex = -1
 	rf.lastApplied = -1
 
