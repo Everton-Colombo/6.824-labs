@@ -187,14 +187,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
-		var isCandidateAsUpToDate bool
-		if args.LastLogTerm > rf.currentTerm {
-			isCandidateAsUpToDate = true
-		} else if ((args.LastLogTerm == -1 && len(rf.log) == 0) || args.LastLogTerm == rf.currentTerm) && ((args.LastLogIndex == -1 && len(rf.log) == 0) || args.LastLogIndex >= len(rf.log)) {
-			isCandidateAsUpToDate = true
+		myLastLogTerm := -1
+		if len(rf.log) > 0 {
+			myLastLogTerm = rf.log[len(rf.log)-1].Term
 		}
+		myLastLogIndex := len(rf.log) - 1
 
-		if isCandidateAsUpToDate {
+		candidateUpToDate := args.LastLogTerm > myLastLogTerm ||
+			(args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= myLastLogIndex)
+
+		if candidateUpToDate {
 			reply.VoteGranted = true
 			rf.resetElectionTimer()
 			rf.votedFor = args.CandidateId
