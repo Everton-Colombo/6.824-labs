@@ -230,18 +230,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	reply.Term = rf.currentTerm
 
-	rf.resetElectionTimer()
-
-	if rf.currentRole != Leader || (rf.currentRole == Leader && args.Term > rf.currentTerm) {
-		rf.updateRole(Follower)
+	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.votedFor = -1
+
+		if rf.currentRole != Follower {
+			rf.updateRole(Follower)
+			fmt.Printf("[%d::AppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
+		}
 	}
 
-	if args.Term < rf.currentTerm || len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+	if args.Term < rf.currentTerm {
 		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
 	}
+
+	if len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
+		reply.Success = false
+		return
+	}
+
+	rf.resetElectionTimer()
 
 	// Overwrite conflicting indexes (if any) to match leader entries:
 	nextReadIdx := 0
