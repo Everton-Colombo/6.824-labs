@@ -364,7 +364,7 @@ func (rf *Raft) runElection() {
 	rf.resetElectionTimer()
 	rf.mu.Unlock()
 
-	var replies []*RequestVoteReply
+	replyChan := make(chan *RequestVoteReply, len(rf.peers)-1)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -386,18 +386,22 @@ func (rf *Raft) runElection() {
 		}
 		rf.mu.Unlock()
 
-		reply := RequestVoteReply{Term: -1}
-		replies = append(replies, &reply)
-		go rf.sendRequestVote(i, &args, &reply)
+		go func(serverIdx int) {
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(serverIdx, &args, &reply)
+			if ok {
+				replyChan <- &reply
+			}
+		}(i)
 	}
 
 	hasMajorityGranted := false
 	hasMajorityRejected := false
-	var votesGranted, votesRejected int
+	votesGranted := 1 // Start counting own vote
+	votesRejected := 0
 	for !hasMajorityGranted && !hasMajorityRejected {
-		votesGranted = 1 // Start couting own vote
-		votesRejected = 0
-		for _, reply := range replies {
+		select {
+		case reply := <-replyChan:
 			rf.mu.Lock()
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
@@ -408,31 +412,29 @@ func (rf *Raft) runElection() {
 			}
 			rf.mu.Unlock()
 
-			if reply.Term > -1 { // if reply received
-				if reply.VoteGranted {
-					votesGranted++
-				} else {
-					votesRejected++
-				}
+			if reply.VoteGranted {
+				votesGranted++
+			} else {
+				votesRejected++
 			}
-		}
+		default:
+			if votesGranted > len(rf.peers)/2 {
+				hasMajorityGranted = true
+			} else if votesRejected > len(rf.peers)/2 {
+				hasMajorityRejected = true
+			}
 
-		if votesGranted > len(rf.peers)/2 {
-			hasMajorityGranted = true
-		} else if votesRejected > len(rf.peers)/2 {
-			hasMajorityRejected = true
-		}
-
-		rf.mu.Lock()
-		if time.Since(rf.electionResetTs) >= ElectionTimeout {
-			fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
-			rf.resetElectionTimer()
+			rf.mu.Lock()
+			if time.Since(rf.electionResetTs) >= ElectionTimeout {
+				fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
+				rf.resetElectionTimer()
+				rf.mu.Unlock()
+				return
+			}
 			rf.mu.Unlock()
-			return
-		}
-		rf.mu.Unlock()
 
-		time.Sleep(50 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 
 	fmt.Printf("[%d::runElection()] Election finished. Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n",
