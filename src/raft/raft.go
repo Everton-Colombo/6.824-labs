@@ -359,6 +359,7 @@ func (rf *Raft) followerBehavior() {
 func (rf *Raft) runElection() {
 	rf.mu.Lock()
 	rf.currentTerm++
+	electionTerm := rf.currentTerm
 	rf.votedFor = rf.me
 	rf.resetElectionTimer()
 	rf.mu.Unlock()
@@ -439,7 +440,7 @@ func (rf *Raft) runElection() {
 
 	rf.mu.Lock()
 	rf.resetElectionTimer()
-	if hasMajorityGranted && rf.currentRole == Candidate {
+	if hasMajorityGranted && rf.currentRole == Candidate && rf.currentTerm == electionTerm {
 		rf.updateRole(Leader)
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
