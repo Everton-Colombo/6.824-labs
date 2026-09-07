@@ -89,8 +89,8 @@ type Raft struct {
 	electionResetTs time.Time
 
 	// Volatile state on leaders:
-	nextIndex  []int
-	matchIndex []int
+	nextIndex  []int // for each server, idx of the next log entry to send to that server
+	matchIndex []int // for each server, idx of the highest log entry known to be replicated on server
 }
 
 func (rf *Raft) updateRole(newRole ServerRole) {
@@ -241,12 +241,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term < rf.currentTerm {
+		// Rejected due to stale term
 		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
 	}
 
 	if len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+		// Rejected due to log incosistency.
+
 		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
@@ -444,6 +447,14 @@ func (rf *Raft) runElection() {
 	rf.resetElectionTimer()
 	if hasMajorityGranted && rf.currentRole == Candidate && rf.currentTerm == electionTerm {
 		rf.updateRole(Leader)
+		// Reinitialize leader state
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+			rf.nextIndex[i] = len(rf.log)
+			rf.matchIndex[i] = -1
+		}
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
@@ -472,7 +483,6 @@ func (rf *Raft) leaderBehavior() {
 		fmt.Printf("[%d::leaderBehavior()] Sending heartbeat for term %d.\n", rf.me, rf.currentTerm)
 
 		rf.prevRole = Leader
-		rf.mu.Unlock()
 
 		// send heartbeat
 		for serverIdx := range rf.peers {
@@ -498,7 +508,6 @@ func (rf *Raft) leaderBehavior() {
 			go rf.sendAppendEntries(serverIdx, &args, &reply)
 		}
 
-		rf.mu.Lock()
 		rf.resetElectionTimer()
 	}
 
@@ -536,6 +545,35 @@ func (rf *Raft) launch() {
 	}()
 }
 
+func (rf *Raft) sendAppendEntries(startIdx int) {
+	for i, peer := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+
+		go func(peerIdx int) {
+
+			args := AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				Entries:      rf.log[startIdx:],
+				LeaderCommit: rf.commitIndex,
+			}
+			if startIdx > 0 {
+				args.PrevLogIndex = startIdx - 1
+				args.PrevLogTerm = rf.log[startIdx-1].Term
+			} else {
+				args.PrevLogIndex = -1
+				args.PrevLogTerm = -1
+			}
+			reply := AppendEntriesReply{}
+			rf.sendAppendEntries(peerIdx, &args, &reply)
+
+		}(i)
+
+	}
+}
+
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -549,11 +587,21 @@ func (rf *Raft) launch() {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	isLeader := rf.currentRole == Leader
+	if !isLeader {
+		return -1, -1, isLeader
+	}
+	index := len(rf.log)
+	term := rf.currentTerm
+
+	rf.log = append(rf.log, LogEntry{
+		Command: command,
+		Term:    term,
+	})
 
 	return index, term, isLeader
 }
@@ -600,6 +648,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.commitIndex = -1
 	rf.lastApplied = -1
+
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
