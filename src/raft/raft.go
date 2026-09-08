@@ -640,7 +640,13 @@ func (rf *Raft) dispatchAppendEntries() {
 
 			// Leader commit idx update logic:
 			rf.mu.Lock()
+
 			for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
+				if rf.log[logIdx].Term != rf.currentTerm {
+					// Leaders may not commit entries with older terms (figure 8 safety violation)
+					break
+				}
+
 				matchCount := 1
 				for peerIdx := range rf.peers {
 					if peerIdx == rf.me {
@@ -654,6 +660,8 @@ func (rf *Raft) dispatchAppendEntries() {
 
 				if matchCount > len(rf.peers)/2 {
 					rf.commitIndex = logIdx
+					rf.applyCond.Broadcast()
+					break
 				}
 			}
 			rf.mu.Unlock()
