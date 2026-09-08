@@ -637,6 +637,26 @@ func (rf *Raft) dispatchAppendEntries() {
 				}
 				rf.mu.Unlock()
 			}
+
+			// Leader commit idx update logic:
+			rf.mu.Lock()
+			for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
+				matchCount := 1
+				for peerIdx := range rf.peers {
+					if peerIdx == rf.me {
+						continue
+					}
+
+					if rf.matchIndex[peerIdx] >= logIdx {
+						matchCount++
+					}
+				}
+
+				if matchCount > len(rf.peers)/2 {
+					rf.commitIndex = logIdx
+				}
+			}
+			rf.mu.Unlock()
 		}(i)
 	}
 }
