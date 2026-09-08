@@ -258,6 +258,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
+
+		if len(rf.log) <= args.PrevLogIndex {
+			reply.XTerm = -1
+			reply.XIndex = -1
+			reply.XLen = len(rf.log)
+		} else {
+			reply.XTerm = rf.log[args.PrevLogIndex].Term
+			for idx, entry := range rf.log {
+				if entry.Term == reply.XTerm {
+					reply.XIndex = idx
+					break
+				}
+			}
+			reply.XLen = len(rf.log)
+		}
+
 		return
 	}
 
@@ -596,13 +612,33 @@ func (rf *Raft) dispatchAppendEntries() {
 					rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
 				} else {
 					if reply.PeerTerm > rf.currentTerm {
+						// AE rejected due to stale term. Update term and convert to follower.
 						rf.currentTerm = reply.PeerTerm
 						rf.votedFor = -1
 						rf.updateRole(Follower)
 						fmt.Printf("[%d::dispatchAppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
 					} else {
-						// Decrement nextIndex for the peer and retry
-						rf.nextIndex[peerIdx] = max(0, rf.nextIndex[peerIdx]-1)
+						// AE rejected due to log inconsistency. Adjust nextIndex based on reply.
+						if reply.XTerm != -1 {
+							// Inconsistency was conflicting entry at PrevLogIdx
+							lastLeaderIdxOfXTerm := -1
+							for idx, entry := range rf.log {
+								if entry.Term == reply.XTerm {
+									lastLeaderIdxOfXTerm = idx
+								}
+							}
+
+							if lastLeaderIdxOfXTerm != -1 {
+								// Leader has an entry with term XTerm
+								rf.nextIndex[peerIdx] = lastLeaderIdxOfXTerm
+							} else {
+								rf.nextIndex[peerIdx] = reply.XIndex
+							}
+
+						} else {
+							// Inconsistency was a shorter client log
+							rf.nextIndex[peerIdx] = reply.XLen
+						}
 					}
 				}
 				rf.mu.Unlock()
