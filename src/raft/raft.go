@@ -218,8 +218,11 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	PeerTerm int
+	Success  bool
+	XTerm    int // term of the conflicting entry (if any)
+	XIndex   int // index of the first entry with that term (if any)
+	XLen     int // length of the follower's log
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -227,8 +230,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	fmt.Printf("[%d::AppendEntries()] Received AppendEntries RPC from leader %d for term %d.\n", rf.me, args.LeaderId, args.Term)
+	reply.XTerm = -1
+	reply.XIndex = -1
+	reply.XLen = len(rf.log)
 
-	reply.Term = rf.currentTerm
+	reply.PeerTerm = rf.currentTerm
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
@@ -547,11 +553,13 @@ func (rf *Raft) launch() {
 
 func (rf *Raft) dispatchAppendEntries() {
 	for i := range rf.peers {
+		rf.mu.Lock()
 		if i == rf.me {
 			continue
 		}
 
 		rf.electionResetTs = time.Now() // Reset election timer on leader activity
+		rf.mu.Unlock()
 
 		go func(peerIdx int) {
 			for rf.matchIndex[peerIdx] < len(rf.log)-1 {
@@ -559,7 +567,7 @@ func (rf *Raft) dispatchAppendEntries() {
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
-					Entries:      rf.log[rf.nextIndex[peerIdx]-1:],
+					Entries:      rf.log[rf.nextIndex[peerIdx]:],
 					LeaderCommit: rf.commitIndex,
 				}
 				if rf.nextIndex[peerIdx] > 0 {
@@ -574,15 +582,28 @@ func (rf *Raft) dispatchAppendEntries() {
 
 				ok := rf.sendAppendEntries(peerIdx, &args, &reply)
 				if !ok {
+					time.Sleep(10 * time.Millisecond)
+					if rf.killed() {
+						fmt.Printf("[%d::dispatchAppendEntries()] Server killed. Exiting goroutine.\n", rf.me)
+						return
+					}
 					continue
 				}
 
 				rf.mu.Lock()
 				if reply.Success {
-					rf.matchIndex[peerIdx] += len(args.Entries)
+					rf.matchIndex[peerIdx] = args.PrevLogIndex + len(args.Entries)
 					rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
 				} else {
-					rf.nextIndex[peerIdx]--
+					if reply.PeerTerm > rf.currentTerm {
+						rf.currentTerm = reply.PeerTerm
+						rf.votedFor = -1
+						rf.updateRole(Follower)
+						fmt.Printf("[%d::dispatchAppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
+					} else {
+						// Decrement nextIndex for the peer and retry
+						rf.nextIndex[peerIdx] = max(0, rf.nextIndex[peerIdx]-1)
+					}
 				}
 				rf.mu.Unlock()
 			}
