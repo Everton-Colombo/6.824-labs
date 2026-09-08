@@ -545,32 +545,48 @@ func (rf *Raft) launch() {
 	}()
 }
 
-func (rf *Raft) sendAppendEntries(startIdx int) {
-	for i, peer := range rf.peers {
+func (rf *Raft) dispatchAppendEntries() {
+	for i := range rf.peers {
 		if i == rf.me {
 			continue
 		}
 
+		rf.electionResetTs = time.Now() // Reset election timer on leader activity
+
 		go func(peerIdx int) {
+			for rf.matchIndex[peerIdx] < len(rf.log)-1 {
+				rf.mu.Lock()
+				args := AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					Entries:      rf.log[rf.nextIndex[peerIdx]-1:],
+					LeaderCommit: rf.commitIndex,
+				}
+				if rf.nextIndex[peerIdx] > 0 {
+					args.PrevLogIndex = rf.nextIndex[peerIdx] - 1
+					args.PrevLogTerm = rf.log[rf.nextIndex[peerIdx]-1].Term
+				} else {
+					args.PrevLogIndex = -1
+					args.PrevLogTerm = -1
+				}
+				reply := AppendEntriesReply{}
+				rf.mu.Unlock()
 
-			args := AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				Entries:      rf.log[startIdx:],
-				LeaderCommit: rf.commitIndex,
-			}
-			if startIdx > 0 {
-				args.PrevLogIndex = startIdx - 1
-				args.PrevLogTerm = rf.log[startIdx-1].Term
-			} else {
-				args.PrevLogIndex = -1
-				args.PrevLogTerm = -1
-			}
-			reply := AppendEntriesReply{}
-			rf.sendAppendEntries(peerIdx, &args, &reply)
+				ok := rf.sendAppendEntries(peerIdx, &args, &reply)
+				if !ok {
+					continue
+				}
 
+				rf.mu.Lock()
+				if reply.Success {
+					rf.matchIndex[peerIdx] += len(args.Entries)
+					rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
+				} else {
+					rf.nextIndex[peerIdx]--
+				}
+				rf.mu.Unlock()
+			}
 		}(i)
-
 	}
 }
 
@@ -602,6 +618,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 		Term:    term,
 	})
+
+	go rf.dispatchAppendEntries()
 
 	return index, term, isLeader
 }
