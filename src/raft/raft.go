@@ -279,15 +279,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.resetElectionTimer()
 
-	// Overwrite conflicting indexes (if any) to match leader entries:
-	nextReadIdx := 0
-	for nextWriteIdx := args.PrevLogIndex + 1; nextWriteIdx < len(rf.log); nextWriteIdx++ {
-		rf.log[nextWriteIdx] = args.Entries[nextReadIdx]
-		nextReadIdx++
-	}
-
-	// Append extra entries (if any)
-	rf.log = append(rf.log, args.Entries[nextReadIdx:]...)
+	// Append entries from prevlogindex
+	rf.log = rf.log[:args.PrevLogIndex+1]
+	rf.log = append(rf.log, args.Entries...)
 
 	// Update commitIndex
 	if args.LeaderCommit > rf.commitIndex {
