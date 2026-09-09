@@ -437,6 +437,11 @@ func (rf *Raft) runElection() {
 				votesRejected++
 			}
 		default:
+			if rf.currentRole != Candidate || rf.currentTerm != electionTerm {
+				fmt.Printf("[%d::runElection()] No longer a candidate or term changed. Exiting election.\n", rf.me)
+				return
+			}
+
 			if votesGranted > len(rf.peers)/2 {
 				hasMajorityGranted = true
 			} else if votesRejected > len(rf.peers)/2 {
