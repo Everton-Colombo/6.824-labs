@@ -347,13 +347,13 @@ func (rf *Raft) applyOp() {
 			fmt.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
-				rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
+				// rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[i].Command,
 					CommandIndex: i,
 				}
-				rf.applyCond.L.Lock()
+				// rf.applyCond.L.Lock()
 			}
 		} else {
 			rf.applyCond.Wait()
@@ -596,8 +596,8 @@ func (rf *Raft) dispatchAppendEntries() {
 		rf.mu.Unlock()
 
 		go func(peerIdx int) {
+			rf.mu.Lock()
 			for rf.matchIndex[peerIdx] < len(rf.log)-1 {
-				rf.mu.Lock()
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
@@ -621,6 +621,7 @@ func (rf *Raft) dispatchAppendEntries() {
 						fmt.Printf("[%d::dispatchAppendEntries()] Server killed. Exiting goroutine.\n", rf.me)
 						return
 					}
+					rf.mu.Lock()
 					continue
 				}
 
@@ -659,12 +660,9 @@ func (rf *Raft) dispatchAppendEntries() {
 						}
 					}
 				}
-				rf.mu.Unlock()
 			}
 
 			// Leader commit idx update logic:
-			rf.mu.Lock()
-
 			for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
 				if rf.log[logIdx].Term != rf.currentTerm {
 					// Leaders may not commit entries with older terms (figure 8 safety violation)
