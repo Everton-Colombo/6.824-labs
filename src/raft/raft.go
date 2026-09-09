@@ -471,6 +471,15 @@ func (rf *Raft) runElection() {
 			rf.nextIndex[i] = len(rf.log)
 			rf.matchIndex[i] = -1
 		}
+
+		// Commit no-op
+		rf.log = append(rf.log, LogEntry{
+			Term:    rf.currentTerm,
+			Command: nil,
+		})
+		rf.commitIndex = len(rf.log) - 1
+		rf.applyCond.Broadcast()
+
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
