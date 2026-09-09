@@ -520,22 +520,30 @@ func (rf *Raft) leaderBehavior() {
 				continue
 			}
 
-			args := AppendEntriesArgs{
-				Term:     rf.currentTerm,
-				LeaderId: rf.me,
-				// PrevLogIndex: len(rf.log) - 1,
-				// PrevLogTerm:  rf.log[len(rf.log)-1].Term,
-				LeaderCommit: rf.commitIndex,
-			}
-			if len(rf.log) > 0 {
-				args.PrevLogIndex = len(rf.log) - 1
-				args.PrevLogTerm = rf.log[len(rf.log)-1].Term
-			} else {
-				args.PrevLogIndex = -1
-				args.PrevLogTerm = -1
-			}
-			reply := AppendEntriesReply{}
-			go rf.sendAppendEntries(serverIdx, &args, &reply)
+			go func(serverIdx int) {
+				args := AppendEntriesArgs{
+					Term:     rf.currentTerm,
+					LeaderId: rf.me,
+					// PrevLogIndex: len(rf.log) - 1,
+					// PrevLogTerm:  rf.log[len(rf.log)-1].Term,
+					LeaderCommit: rf.commitIndex,
+				}
+				if len(rf.log) > 0 {
+					args.PrevLogIndex = len(rf.log) - 1
+					args.PrevLogTerm = rf.log[len(rf.log)-1].Term
+				} else {
+					args.PrevLogIndex = -1
+					args.PrevLogTerm = -1
+				}
+				reply := AppendEntriesReply{}
+				ok := rf.sendAppendEntries(serverIdx, &args, &reply)
+				if ok && reply.PeerTerm > rf.currentTerm {
+					rf.currentTerm = reply.PeerTerm
+					rf.votedFor = -1
+					rf.updateRole(Follower)
+					fmt.Printf("[%d::leaderBehavior()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
+				}
+			}(serverIdx)
 		}
 
 		rf.resetElectionTimer()
