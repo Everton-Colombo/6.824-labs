@@ -591,8 +591,7 @@ func (rf *Raft) dispatchAppendEntries() {
 			continue
 		}
 		rf.mu.Lock()
-
-		rf.electionResetTs = time.Now() // Reset election timer on leader activity
+		rf.resetElectionTimer()
 		rf.mu.Unlock()
 
 		go func(peerIdx int) {
