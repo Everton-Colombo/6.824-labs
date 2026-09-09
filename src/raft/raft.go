@@ -347,11 +347,13 @@ func (rf *Raft) applyOp() {
 			fmt.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
+				rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[i].Command,
 					CommandIndex: i,
 				}
+				rf.applyCond.L.Lock()
 			}
 		} else {
 			rf.applyCond.Wait()
