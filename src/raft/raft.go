@@ -480,11 +480,11 @@ func (rf *Raft) runElection() {
 		}
 
 		// Commit no-op
-		rf.log = append(rf.log, LogEntry{
-			Term:    rf.currentTerm,
-			Command: nil,
-		})
-		rf.commitIndex = len(rf.log) - 1
+		// rf.log = append(rf.log, LogEntry{
+		// 	Term:    rf.currentTerm,
+		// 	Command: nil,
+		// })
+		// rf.commitIndex = len(rf.log) - 1
 		rf.applyCond.Broadcast()
 
 		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
@@ -597,6 +597,12 @@ func (rf *Raft) dispatchAppendEntries() {
 		go func(peerIdx int) {
 			rf.mu.Lock()
 			for rf.matchIndex[peerIdx] < len(rf.log)-1 {
+				if rf.currentRole != Leader {
+					fmt.Printf("[%d::dispatchAppendEntries()] No longer leader. Exiting goroutine.\n", rf.me)
+					rf.mu.Unlock()
+					return
+				}
+
 				args := AppendEntriesArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
@@ -625,6 +631,11 @@ func (rf *Raft) dispatchAppendEntries() {
 				}
 
 				rf.mu.Lock()
+				if rf.currentRole != Leader || rf.currentTerm != args.Term {
+					rf.mu.Unlock()
+					return
+				}
+
 				if reply.Success {
 					rf.matchIndex[peerIdx] = args.PrevLogIndex + len(args.Entries)
 					rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
@@ -764,8 +775,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentRole = Follower
 	rf.votedFor = -1
-	rf.commitIndex = -1
-	rf.lastApplied = -1
+	rf.log = []LogEntry{{Term: 0}} // Initialize with a dummy log entry at index 0
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
