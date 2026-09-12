@@ -439,18 +439,17 @@ func (rf *Raft) runElection() {
 				votesRejected++
 			}
 		default:
+			rf.mu.Lock()
 			if rf.currentRole != Candidate || rf.currentTerm != electionTerm {
 				fmt.Printf("[%d::runElection()] No longer a candidate or term changed. Exiting election.\n", rf.me)
+				rf.mu.Unlock()
 				return
 			}
-
 			if votesGranted > len(rf.peers)/2 {
 				hasMajorityGranted = true
 			} else if votesRejected > len(rf.peers)/2 {
 				hasMajorityRejected = true
 			}
-
-			rf.mu.Lock()
 			if time.Since(rf.electionResetTs) >= ElectionTimeout {
 				fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
 				rf.resetElectionTimer()
@@ -464,7 +463,7 @@ func (rf *Raft) runElection() {
 	}
 
 	fmt.Printf("[%d::runElection()] Election finished. Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n",
-		rf.me, votesGranted, votesRejected, rf.currentTerm)
+		rf.me, votesGranted, votesRejected, electionTerm)
 
 	rf.mu.Lock()
 	rf.resetElectionTimer()
@@ -523,11 +522,14 @@ func (rf *Raft) leaderBehavior() {
 			}
 
 			go func(serverIdx int) {
+				rf.mu.Lock()
+				if rf.currentRole != Leader {
+					rf.mu.Unlock()
+					return
+				}
 				args := AppendEntriesArgs{
-					Term:     rf.currentTerm,
-					LeaderId: rf.me,
-					// PrevLogIndex: len(rf.log) - 1,
-					// PrevLogTerm:  rf.log[len(rf.log)-1].Term,
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
 					LeaderCommit: rf.commitIndex,
 				}
 				if len(rf.log) > 0 {
@@ -537,14 +539,19 @@ func (rf *Raft) leaderBehavior() {
 					args.PrevLogIndex = -1
 					args.PrevLogTerm = -1
 				}
+				rf.mu.Unlock()
+
 				reply := AppendEntriesReply{}
 				ok := rf.sendAppendEntries(serverIdx, &args, &reply)
-				if ok && reply.PeerTerm > rf.currentTerm {
+
+				rf.mu.Lock()
+				if ok && rf.currentRole == Leader && rf.currentTerm == args.Term && reply.PeerTerm > rf.currentTerm {
 					rf.currentTerm = reply.PeerTerm
 					rf.votedFor = -1
 					rf.updateRole(Follower)
 					fmt.Printf("[%d::leaderBehavior()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
 				}
+				rf.mu.Unlock()
 			}(serverIdx)
 		}
 
