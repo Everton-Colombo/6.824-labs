@@ -18,12 +18,14 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"../labgob"
 	"../labrpc"
 )
 
@@ -125,6 +127,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
@@ -145,6 +154,21 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []LogEntry
+	if d.Decode(&currentTerm) == nil &&
+		d.Decode(&votedFor) == nil &&
+		d.Decode(&log) == nil {
+
+		rf.mu.Lock()
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = log
+		rf.mu.Unlock()
+	}
 }
 
 // example RequestVote RPC arguments structure.
@@ -182,6 +206,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 		rf.updateRole(Follower)
 		fmt.Printf("[%d::RequestVote()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
 	}
@@ -200,6 +225,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			reply.VoteGranted = true
 			rf.resetElectionTimer()
 			rf.votedFor = args.CandidateId
+			rf.persist()
 			fmt.Printf("[%d::RequestVote()] Granted vote for %d\n", rf.me, args.CandidateId)
 			return
 		}
@@ -239,6 +265,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.persist()
 
 		if rf.currentRole != Follower {
 			rf.updateRole(Follower)
@@ -280,8 +307,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.resetElectionTimer()
 
 	// Append entries from prevlogindex
-	rf.log = rf.log[:args.PrevLogIndex+1]
+	if len(args.Entries) != 0 {
+		var i, aeIdx int
+		for i, aeIdx = args.PrevLogIndex+1, 0; i < len(rf.log) && aeIdx < len(args.Entries); i, aeIdx = i+1, aeIdx+1 {
+			if rf.log[i] != args.Entries[aeIdx] {
+				rf.log = rf.log[:i]
+				args.Entries = args.Entries[aeIdx:]
+			}
+		}
+	}
+
 	rf.log = append(rf.log, args.Entries...)
+	rf.persist()
 
 	// Update commitIndex
 	if args.LeaderCommit > rf.commitIndex {
@@ -382,6 +419,7 @@ func (rf *Raft) runElection() {
 	rf.currentTerm++
 	electionTerm := rf.currentTerm
 	rf.votedFor = rf.me
+	rf.persist()
 	rf.resetElectionTimer()
 	rf.mu.Unlock()
 
@@ -427,6 +465,7 @@ func (rf *Raft) runElection() {
 			if reply.Term > rf.currentTerm {
 				rf.currentTerm = reply.Term
 				rf.votedFor = -1
+				rf.persist()
 				rf.updateRole(Follower)
 				rf.mu.Unlock()
 				return
@@ -548,6 +587,7 @@ func (rf *Raft) leaderBehavior() {
 				if ok && rf.currentRole == Leader && rf.currentTerm == args.Term && reply.PeerTerm > rf.currentTerm {
 					rf.currentTerm = reply.PeerTerm
 					rf.votedFor = -1
+					rf.persist()
 					rf.updateRole(Follower)
 					fmt.Printf("[%d::leaderBehavior()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
 				}
@@ -651,6 +691,7 @@ func (rf *Raft) dispatchAppendEntries() {
 						// AE rejected due to stale term. Update term and convert to follower.
 						rf.currentTerm = reply.PeerTerm
 						rf.votedFor = -1
+						rf.persist()
 						rf.updateRole(Follower)
 						fmt.Printf("[%d::dispatchAppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
 					} else {
@@ -736,6 +777,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 		Term:    term,
 	})
+	rf.persist()
 
 	go rf.dispatchAppendEntries()
 
