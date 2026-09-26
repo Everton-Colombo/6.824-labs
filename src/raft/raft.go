@@ -280,6 +280,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	rf.resetElectionTimer()
+
 	if len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
 		// Rejected due to log incosistency.
 
@@ -304,17 +306,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	rf.resetElectionTimer()
-
 	// Append entries from prevlogindex
 	if len(args.Entries) != 0 {
 		var i, aeIdx int
 		for i, aeIdx = args.PrevLogIndex+1, 0; i < len(rf.log) && aeIdx < len(args.Entries); i, aeIdx = i+1, aeIdx+1 {
 			if rf.log[i] != args.Entries[aeIdx] {
 				rf.log = rf.log[:i]
-				args.Entries = args.Entries[aeIdx:]
+				break
 			}
 		}
+		args.Entries = args.Entries[aeIdx:]
 	}
 
 	rf.log = append(rf.log, args.Entries...)
@@ -559,42 +560,8 @@ func (rf *Raft) leaderBehavior() {
 			if serverIdx == rf.me {
 				continue
 			}
-
-			go func(serverIdx int) {
-				rf.mu.Lock()
-				if rf.currentRole != Leader {
-					rf.mu.Unlock()
-					return
-				}
-				args := AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					LeaderCommit: rf.commitIndex,
-				}
-				if len(rf.log) > 0 {
-					args.PrevLogIndex = len(rf.log) - 1
-					args.PrevLogTerm = rf.log[len(rf.log)-1].Term
-				} else {
-					args.PrevLogIndex = -1
-					args.PrevLogTerm = -1
-				}
-				rf.mu.Unlock()
-
-				reply := AppendEntriesReply{}
-				ok := rf.sendAppendEntries(serverIdx, &args, &reply)
-
-				rf.mu.Lock()
-				if ok && rf.currentRole == Leader && rf.currentTerm == args.Term && reply.PeerTerm > rf.currentTerm {
-					rf.currentTerm = reply.PeerTerm
-					rf.votedFor = -1
-					rf.persist()
-					rf.updateRole(Follower)
-					fmt.Printf("[%d::leaderBehavior()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
-				}
-				rf.mu.Unlock()
-			}(serverIdx)
+			go rf.replicateTo(serverIdx)
 		}
-
 		rf.resetElectionTimer()
 	}
 
@@ -632,6 +599,107 @@ func (rf *Raft) launch() {
 	}()
 }
 
+func (rf *Raft) handleAeRejection(reply AppendEntriesReply, peerIdx int) {
+	if reply.PeerTerm > rf.currentTerm {
+		// AE rejected due to stale term. Update term and convert to follower.
+		rf.currentTerm = reply.PeerTerm
+		rf.votedFor = -1
+		rf.persist()
+		rf.updateRole(Follower)
+		fmt.Printf("[%d::handleAeRejection()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
+	} else {
+		// AE rejected due to log inconsistency. Adjust nextIndex based on reply.
+		if reply.XTerm != -1 {
+			// Inconsistency was conflicting entry at PrevLogIdx
+			lastLeaderIdxOfXTerm := -1
+			for idx, entry := range rf.log {
+				if entry.Term == reply.XTerm {
+					lastLeaderIdxOfXTerm = idx
+				}
+			}
+
+			if lastLeaderIdxOfXTerm != -1 {
+				// Leader has an entry with term XTerm
+				rf.nextIndex[peerIdx] = lastLeaderIdxOfXTerm
+			} else {
+				rf.nextIndex[peerIdx] = reply.XIndex
+			}
+
+		} else {
+			// Inconsistency was a shorter client log
+			rf.nextIndex[peerIdx] = reply.XLen
+		}
+	}
+}
+
+func (rf *Raft) updateCommitIndex() {
+	for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
+		if rf.log[logIdx].Term != rf.currentTerm {
+			// Leaders may not commit entries with older terms (figure 8 safety violation)
+			break
+		}
+
+		matchCount := 1
+		for peerIdx := range rf.peers {
+			if peerIdx == rf.me {
+				continue
+			}
+
+			if rf.matchIndex[peerIdx] >= logIdx {
+				matchCount++
+			}
+		}
+
+		if matchCount > len(rf.peers)/2 {
+			rf.commitIndex = logIdx
+			rf.applyCond.Broadcast()
+			break
+		}
+	}
+}
+
+func (rf *Raft) replicateTo(peerIdx int) {
+	rf.mu.Lock()
+	if rf.currentRole != Leader {
+		fmt.Printf("[%d::replicateTo()] No longer leader. Exiting goroutine.\n", rf.me)
+		rf.mu.Unlock()
+		return
+	}
+
+	args := AppendEntriesArgs{
+		Term:         rf.currentTerm,
+		LeaderId:     rf.me,
+		LeaderCommit: rf.commitIndex,
+	}
+	if rf.nextIndex[peerIdx] > 0 {
+		args.PrevLogIndex = rf.nextIndex[peerIdx] - 1
+		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		args.Entries = append([]LogEntry{}, rf.log[rf.nextIndex[peerIdx]:]...)
+	} else {
+		args.PrevLogIndex = -1
+		args.PrevLogTerm = -1
+	}
+	rf.mu.Unlock()
+
+	reply := AppendEntriesReply{}
+	if !rf.sendAppendEntries(peerIdx, &args, &reply) {
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if rf.currentRole != Leader || rf.currentTerm != args.Term {
+		return
+	}
+	if reply.Success {
+		rf.matchIndex[peerIdx] = args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
+	} else {
+		rf.handleAeRejection(reply, peerIdx)
+	}
+	rf.updateCommitIndex()
+}
+
 func (rf *Raft) dispatchAppendEntries() {
 	for i := range rf.peers {
 		if i == rf.me {
@@ -641,111 +709,7 @@ func (rf *Raft) dispatchAppendEntries() {
 		rf.resetElectionTimer()
 		rf.mu.Unlock()
 
-		go func(peerIdx int) {
-			rf.mu.Lock()
-			for rf.matchIndex[peerIdx] < len(rf.log)-1 {
-				if rf.currentRole != Leader {
-					fmt.Printf("[%d::dispatchAppendEntries()] No longer leader. Exiting goroutine.\n", rf.me)
-					rf.mu.Unlock()
-					return
-				}
-
-				args := AppendEntriesArgs{
-					Term:         rf.currentTerm,
-					LeaderId:     rf.me,
-					Entries:      rf.log[rf.nextIndex[peerIdx]:],
-					LeaderCommit: rf.commitIndex,
-				}
-				if rf.nextIndex[peerIdx] > 0 {
-					args.PrevLogIndex = rf.nextIndex[peerIdx] - 1
-					args.PrevLogTerm = rf.log[rf.nextIndex[peerIdx]-1].Term
-				} else {
-					args.PrevLogIndex = -1
-					args.PrevLogTerm = -1
-				}
-				reply := AppendEntriesReply{}
-				rf.mu.Unlock()
-
-				ok := rf.sendAppendEntries(peerIdx, &args, &reply)
-				if !ok {
-					time.Sleep(10 * time.Millisecond)
-					if rf.killed() {
-						fmt.Printf("[%d::dispatchAppendEntries()] Server killed. Exiting goroutine.\n", rf.me)
-						return
-					}
-					rf.mu.Lock()
-					continue
-				}
-
-				rf.mu.Lock()
-				if rf.currentRole != Leader || rf.currentTerm != args.Term {
-					rf.mu.Unlock()
-					return
-				}
-
-				if reply.Success {
-					rf.matchIndex[peerIdx] = args.PrevLogIndex + len(args.Entries)
-					rf.nextIndex[peerIdx] = rf.matchIndex[peerIdx] + 1
-				} else {
-					if reply.PeerTerm > rf.currentTerm {
-						// AE rejected due to stale term. Update term and convert to follower.
-						rf.currentTerm = reply.PeerTerm
-						rf.votedFor = -1
-						rf.persist()
-						rf.updateRole(Follower)
-						fmt.Printf("[%d::dispatchAppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
-					} else {
-						// AE rejected due to log inconsistency. Adjust nextIndex based on reply.
-						if reply.XTerm != -1 {
-							// Inconsistency was conflicting entry at PrevLogIdx
-							lastLeaderIdxOfXTerm := -1
-							for idx, entry := range rf.log {
-								if entry.Term == reply.XTerm {
-									lastLeaderIdxOfXTerm = idx
-								}
-							}
-
-							if lastLeaderIdxOfXTerm != -1 {
-								// Leader has an entry with term XTerm
-								rf.nextIndex[peerIdx] = lastLeaderIdxOfXTerm
-							} else {
-								rf.nextIndex[peerIdx] = reply.XIndex
-							}
-
-						} else {
-							// Inconsistency was a shorter client log
-							rf.nextIndex[peerIdx] = reply.XLen
-						}
-					}
-				}
-			}
-
-			// Leader commit idx update logic:
-			for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
-				if rf.log[logIdx].Term != rf.currentTerm {
-					// Leaders may not commit entries with older terms (figure 8 safety violation)
-					break
-				}
-
-				matchCount := 1
-				for peerIdx := range rf.peers {
-					if peerIdx == rf.me {
-						continue
-					}
-
-					if rf.matchIndex[peerIdx] >= logIdx {
-						matchCount++
-					}
-				}
-
-				if matchCount > len(rf.peers)/2 {
-					rf.commitIndex = logIdx
-					rf.applyCond.Broadcast()
-					break
-				}
-			}
-			rf.mu.Unlock()
-		}(i)
+		go rf.replicateTo(i)
 	}
 }
 
