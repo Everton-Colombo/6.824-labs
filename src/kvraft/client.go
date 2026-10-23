@@ -1,12 +1,15 @@
 package kvraft
 
-import "../labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"math/big"
 
+	"../labrpc"
+)
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
+	servers       []*labrpc.ClientEnd
+	currentLeader int
 	// You will have to modify this struct.
 }
 
@@ -20,11 +23,11 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.currentLeader = -1 // -1 = unknown leader
 	// You'll have to add code here.
 	return ck
 }
 
-//
 // fetch the current value for a key.
 // returns "" if the key does not exist.
 // keeps trying forever in the face of all other errors.
@@ -35,14 +38,23 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) Get(key string) string {
+	// You will have to modify this function
+	madeContact := false
+	getArgs := GetArgs{Key: key}
+	var getReply GetReply
+	for !madeContact {
+		ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &getReply)
+		if getReply.Err == ErrWrongLeader {
+			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
+		} else {
+			madeContact = true
+		}
+	}
 
-	// You will have to modify this function.
-	return ""
+	return getReply.Value
 }
 
-//
 // shared by Put and Append.
 //
 // you can send an RPC with code like this:
@@ -51,7 +63,6 @@ func (ck *Clerk) Get(key string) string {
 // the types of args and reply (including whether they are pointers)
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
-//
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 }
