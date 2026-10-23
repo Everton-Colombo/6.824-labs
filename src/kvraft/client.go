@@ -23,7 +23,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	ck.currentLeader = -1 // -1 = unknown leader
+	ck.currentLeader = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -44,8 +44,8 @@ func (ck *Clerk) Get(key string) string {
 	getArgs := GetArgs{Key: key}
 	var getReply GetReply
 	for !madeContact {
-		ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &getReply)
-		if getReply.Err == ErrWrongLeader {
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &getReply)
+		if getReply.Err == ErrWrongLeader || !ok {
 			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		} else {
 			madeContact = true
