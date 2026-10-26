@@ -106,13 +106,6 @@ func (kv *KVServer) startAndWaitForApply(op Op) RequestResponse {
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *RequestResponse) {
-	// Your code here.
-	_, isLeader := kv.rf.GetState()
-	if !isLeader {
-		reply.Err = ErrWrongLeader
-		return
-	}
-
 	command := Op{
 		Name: "Get",
 		Key:  args.Key,
@@ -126,7 +119,17 @@ func (kv *KVServer) Get(args *GetArgs, reply *RequestResponse) {
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *RequestResponse) {
-	// Your code here.
+	command := Op{
+		Name:  args.Op,
+		Key:   args.Key,
+		Value: args.Value,
+		RequestId: RequestId{
+			ClientId: args.ClientID,
+			Seq:      args.Seq,
+		},
+	}
+
+	*reply = kv.startAndWaitForApply(command)
 }
 
 // the tester calls Kill() when a KVServer instance won't
