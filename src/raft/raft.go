@@ -32,11 +32,11 @@ import (
 )
 
 var debugLog = func() *log.Logger {
-	f, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	_, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return log.New(io.Discard, "", 0)
 	}
-	return log.New(f, "", log.Lmicroseconds)
+	return log.New(io.Discard, "", log.Lmicroseconds)
 }()
 
 // import "bytes"
