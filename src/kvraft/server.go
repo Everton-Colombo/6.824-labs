@@ -11,6 +11,8 @@ import (
 	"../raft"
 )
 
+const Timeout = 5 * time.Second
+
 const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
@@ -20,15 +22,19 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type RequestId struct {
+	ClientId int
+	Seq      int
+}
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	ClientID int
-	Seq      int
-	Name     string // "Get", "Put" or "Append"
-	Key      string
-	Value    string
+	RequestId RequestId
+	Name      string // "Get", "Put" or "Append"
+	Key       string
+	Value     string
 }
 
 type KVServer struct {
@@ -41,8 +47,8 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvStore            map[string]string
-	registeredCommands map[Op]chan raft.ApplyMsg // command index -> channel
+	kvStore         map[string]string
+	waitingRequests map[RequestId]chan RequestResponse // command index -> channel
 
 }
 
@@ -50,18 +56,56 @@ func (kv *KVServer) applyMsgHandler() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
 
-		kv.mu.Lock()
-		defer kv.mu.Unlock()
-		for registeredCmd, registeredCmdCh := range kv.registeredCommands {
-			if msg.Command == registeredCmd {
-				registeredCmdCh <- msg
-				break
-			}
+		if !msg.CommandValid {
+			continue
 		}
+
+		response := RequestResponse{Err: OK}
+		kv.mu.Lock()
+		cmd := msg.Command.(Op)
+		switch cmd.Name {
+		case "Put":
+			kv.kvStore[cmd.Key] = cmd.Value
+		case "Append":
+			kv.kvStore[cmd.Key] += cmd.Value
+		case "Get":
+		}
+		response.Value = kv.kvStore[cmd.Key]
+
+		if ch, ok := kv.waitingRequests[cmd.RequestId]; ok {
+			delete(kv.waitingRequests, cmd.RequestId)
+			ch <- response
+		}
+		kv.mu.Unlock()
 	}
 }
 
-func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
+func (kv *KVServer) startAndWaitForApply(op Op) RequestResponse {
+	waitCh := make(chan RequestResponse)
+	kv.mu.Lock()
+	kv.waitingRequests[op.RequestId] = waitCh
+	kv.mu.Unlock()
+
+	_, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		kv.mu.Lock()
+		delete(kv.waitingRequests, op.RequestId)
+		kv.mu.Unlock()
+		return RequestResponse{Err: ErrWrongLeader}
+	}
+
+	select {
+	case response := <-waitCh:
+		return response
+	case <-time.After(Timeout):
+		kv.mu.Lock()
+		delete(kv.waitingRequests, op.RequestId)
+		kv.mu.Unlock()
+		return RequestResponse{Err: ErrTimeout}
+	}
+}
+
+func (kv *KVServer) Get(args *GetArgs, reply *RequestResponse) {
 	// Your code here.
 	_, isLeader := kv.rf.GetState()
 	if !isLeader {
@@ -70,41 +114,18 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	command := Op{
-		Name:     "Get",
-		Key:      args.Key,
-		ClientID: args.ClientID,
-		Seq:      args.Seq,
+		Name: "Get",
+		Key:  args.Key,
+		RequestId: RequestId{
+			ClientId: args.ClientID,
+			Seq:      args.Seq,
+		},
 	}
 
-	kv.mu.Lock()
-	msgChan := make(chan raft.ApplyMsg)
-	kv.registeredCommands[command] = msgChan
-	kv.mu.Unlock()
-
-	_, _, isLeader = kv.rf.Start(command)
-
-OuterLoop:
-	for {
-		select {
-		case <-msgChan:
-			reply.Err = OK
-			reply.Value = kv.kvStore[args.Key]
-			break OuterLoop
-		case <-time.After(250 * time.Millisecond):
-			_, isLeader := kv.rf.GetState()
-			if !isLeader {
-				reply.Err = ErrWrongLeader
-				break OuterLoop
-			}
-		}
-	}
-
-	kv.mu.Lock()
-	delete(kv.registeredCommands, command)
-	kv.mu.Unlock()
+	*reply = kv.startAndWaitForApply(command)
 }
 
-func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *RequestResponse) {
 	// Your code here.
 }
 
