@@ -19,8 +19,10 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
+	"io"
+	"log"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +30,14 @@ import (
 	"../labgob"
 	"../labrpc"
 )
+
+var debugLog = func() *log.Logger {
+	f, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return log.New(io.Discard, "", 0)
+	}
+	return log.New(f, "", log.Lmicroseconds)
+}()
 
 // import "bytes"
 // import "../labgob"
@@ -193,7 +203,7 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	fmt.Printf("[%d::RequestVote()] Received RequestVote: Term=%d, CandidateId=%d, LastLogIndex=%d, LastLogTerm=%d\n", rf.me, args.Term, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
+	debugLog.Printf("[%d::RequestVote()] Received RequestVote: Term=%d, CandidateId=%d, LastLogIndex=%d, LastLogTerm=%d\n", rf.me, args.Term, args.CandidateId, args.LastLogIndex, args.LastLogTerm)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -208,7 +218,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = -1
 		rf.persist()
 		rf.updateRole(Follower)
-		fmt.Printf("[%d::RequestVote()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
+		debugLog.Printf("[%d::RequestVote()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
 	}
 
 	if args.Term >= rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateId) {
@@ -226,12 +236,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.resetElectionTimer()
 			rf.votedFor = args.CandidateId
 			rf.persist()
-			fmt.Printf("[%d::RequestVote()] Granted vote for %d\n", rf.me, args.CandidateId)
+			debugLog.Printf("[%d::RequestVote()] Granted vote for %d\n", rf.me, args.CandidateId)
 			return
 		}
 	}
 
-	fmt.Printf("[%d::RequestVote()] Denied vote for %d\n", rf.me, args.CandidateId)
+	debugLog.Printf("[%d::RequestVote()] Denied vote for %d\n", rf.me, args.CandidateId)
 }
 
 type AppendEntriesArgs struct {
@@ -255,7 +265,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	fmt.Printf("[%d::AppendEntries()] Received AppendEntries RPC from leader %d for term %d.\n", rf.me, args.LeaderId, args.Term)
+	debugLog.Printf("[%d::AppendEntries()] Received AppendEntries RPC from leader %d for term %d.\n", rf.me, args.LeaderId, args.Term)
 	reply.XTerm = -1
 	reply.XIndex = -1
 	reply.XLen = len(rf.log)
@@ -269,13 +279,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if rf.currentRole != Follower {
 			rf.updateRole(Follower)
-			fmt.Printf("[%d::AppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
+			debugLog.Printf("[%d::AppendEntries()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
 		}
 	}
 
 	if args.Term < rf.currentTerm {
 		// Rejected due to stale term
-		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
+		debugLog.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 		return
 	}
@@ -285,7 +295,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
 		// Rejected due to log incosistency.
 
-		fmt.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
+		debugLog.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 
 		if len(rf.log) <= args.PrevLogIndex {
@@ -358,13 +368,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	fmt.Printf("[%d::sendRequestVote()] Sending RequestVote RPC to server %d for term %d.\n", rf.me, server, args.Term)
+	debugLog.Printf("[%d::sendRequestVote()] Sending RequestVote RPC to server %d for term %d.\n", rf.me, server, args.Term)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	fmt.Printf("[%d::sendAppendEntries()] Sending AppendEntries RPC to server %d for term %d.\n", rf.me, server, args.Term)
+	debugLog.Printf("[%d::sendAppendEntries()] Sending AppendEntries RPC to server %d for term %d.\n", rf.me, server, args.Term)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
@@ -377,12 +387,12 @@ func (rf *Raft) applyOp() {
 
 	for {
 		if rf.killed() {
-			fmt.Printf("[%d::applyOp()] Server killed. Exiting goroutine.\n", rf.me)
+			debugLog.Printf("[%d::applyOp()] Server killed. Exiting goroutine.\n", rf.me)
 			return
 		}
 
 		if rf.commitIndex > rf.lastApplied {
-			fmt.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
+			debugLog.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
 				// rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
@@ -402,12 +412,12 @@ func (rf *Raft) applyOp() {
 func (rf *Raft) followerBehavior() {
 	rf.mu.Lock()
 	if rf.electionResetTs.IsZero() {
-		fmt.Printf("[%d::followerBehavior()] Election reset timestamp is zero. Setting to current time.\n", rf.me)
+		debugLog.Printf("[%d::followerBehavior()] Election reset timestamp is zero. Setting to current time.\n", rf.me)
 		rf.resetElectionTimer()
 	}
 
 	if time.Since(rf.electionResetTs) >= ElectionTimeout {
-		fmt.Printf("[%d::followerBehavior()] Election timeout. Transitioning to candidate role.\n", rf.me)
+		debugLog.Printf("[%d::followerBehavior()] Election timeout. Transitioning to candidate role.\n", rf.me)
 		rf.updateRole(Candidate)
 	}
 	rf.mu.Unlock()
@@ -481,7 +491,7 @@ func (rf *Raft) runElection() {
 		default:
 			rf.mu.Lock()
 			if rf.currentRole != Candidate || rf.currentTerm != electionTerm {
-				fmt.Printf("[%d::runElection()] No longer a candidate or term changed. Exiting election.\n", rf.me)
+				debugLog.Printf("[%d::runElection()] No longer a candidate or term changed. Exiting election.\n", rf.me)
 				rf.mu.Unlock()
 				return
 			}
@@ -491,7 +501,7 @@ func (rf *Raft) runElection() {
 				hasMajorityRejected = true
 			}
 			if time.Since(rf.electionResetTs) >= ElectionTimeout {
-				fmt.Printf("[%d::runElection()] Election timeout.\n", rf.me)
+				debugLog.Printf("[%d::runElection()] Election timeout.\n", rf.me)
 				rf.resetElectionTimer()
 				rf.mu.Unlock()
 				return
@@ -502,7 +512,7 @@ func (rf *Raft) runElection() {
 		}
 	}
 
-	fmt.Printf("[%d::runElection()] Election finished. Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n",
+	debugLog.Printf("[%d::runElection()] Election finished. Votes Granted: %d, Votes Rejected: %d, Current Term: %d\n",
 		rf.me, votesGranted, votesRejected, electionTerm)
 
 	rf.mu.Lock()
@@ -526,7 +536,7 @@ func (rf *Raft) runElection() {
 		// rf.commitIndex = len(rf.log) - 1
 		rf.applyCond.Broadcast()
 
-		fmt.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
+		debugLog.Printf("[%d::runElection()] Elected as leader for term %d.\n", rf.me, rf.currentTerm)
 	}
 	rf.mu.Unlock()
 }
@@ -538,7 +548,7 @@ func (rf *Raft) candidateBehavior() {
 		rf.prevRole = Candidate // reset transition trigger
 		// Run election if has just updated or timed out
 		rf.mu.Unlock()
-		fmt.Printf("[%d::candidateBehavior()] Starting election for term %d.\n", rf.me, rf.currentTerm+1)
+		debugLog.Printf("[%d::candidateBehavior()] Starting election for term %d.\n", rf.me, rf.currentTerm+1)
 		rf.runElection()
 	} else {
 		rf.mu.Unlock()
@@ -551,7 +561,7 @@ func (rf *Raft) leaderBehavior() {
 	if rf.prevRole != Leader ||
 		time.Since(rf.electionResetTs) >= HeartBeatTimeout {
 
-		fmt.Printf("[%d::leaderBehavior()] Sending heartbeat for term %d.\n", rf.me, rf.currentTerm)
+		debugLog.Printf("[%d::leaderBehavior()] Sending heartbeat for term %d.\n", rf.me, rf.currentTerm)
 
 		rf.prevRole = Leader
 
@@ -570,7 +580,7 @@ func (rf *Raft) leaderBehavior() {
 
 // Launches goroutines that perform the server operations
 func (rf *Raft) launch() {
-	fmt.Printf("[%d::launch()] Launching...\n", rf.me)
+	debugLog.Printf("[%d::launch()] Launching...\n", rf.me)
 
 	// Actions for all server states:
 	go rf.applyOp()
@@ -579,7 +589,7 @@ func (rf *Raft) launch() {
 	go func() {
 		for {
 			if rf.killed() {
-				fmt.Printf("[%d::launchOps()] Server killed. Exiting goroutine.\n", rf.me)
+				debugLog.Printf("[%d::launchOps()] Server killed. Exiting goroutine.\n", rf.me)
 				return
 			}
 
@@ -606,7 +616,7 @@ func (rf *Raft) handleAeRejection(reply AppendEntriesReply, peerIdx int) {
 		rf.votedFor = -1
 		rf.persist()
 		rf.updateRole(Follower)
-		fmt.Printf("[%d::handleAeRejection()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
+		debugLog.Printf("[%d::handleAeRejection()] Updated term to %d. Converted to follower.\n", rf.me, reply.PeerTerm)
 	} else {
 		// AE rejected due to log inconsistency. Adjust nextIndex based on reply.
 		if reply.XTerm != -1 {
@@ -661,7 +671,7 @@ func (rf *Raft) updateCommitIndex() {
 func (rf *Raft) replicateTo(peerIdx int) {
 	rf.mu.Lock()
 	if rf.currentRole != Leader {
-		fmt.Printf("[%d::replicateTo()] No longer leader. Exiting goroutine.\n", rf.me)
+		debugLog.Printf("[%d::replicateTo()] No longer leader. Exiting goroutine.\n", rf.me)
 		rf.mu.Unlock()
 		return
 	}
