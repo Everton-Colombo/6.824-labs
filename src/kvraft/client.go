@@ -43,21 +43,17 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
-	// You will have to modify this function
-	madeContact := false
 	ck.seq++
 	getArgs := GetArgs{Key: key, ClientID: ck.clientId, Seq: ck.seq}
-	var getReply GetReply
-	for !madeContact {
-		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &getReply)
-		if getReply.Err == ErrWrongLeader || !ok {
+	var response RequestResponse
+	for {
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &response)
+		if response.Err == ErrWrongLeader || !ok {
 			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		} else {
-			madeContact = true
+			return response.Value
 		}
 	}
-
-	return getReply.Value
 }
 
 // shared by Put and Append.
@@ -69,7 +65,17 @@ func (ck *Clerk) Get(key string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	ck.seq++
+	getArgs := PutAppendArgs{Key: key, Value: value, Op: op, ClientID: ck.clientId, Seq: ck.seq}
+	var response RequestResponse
+	for {
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &response)
+		if response.Err == ErrWrongLeader || !ok {
+			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
+		} else {
+			return
+		}
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
