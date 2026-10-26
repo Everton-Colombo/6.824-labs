@@ -178,6 +178,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.kvStore = make(map[string]string)
+	kv.waitingRequests = make(map[RequestId]chan RequestResponse)
 
 	// You may need initialization code here.
 	go kv.applyMsgHandler()
