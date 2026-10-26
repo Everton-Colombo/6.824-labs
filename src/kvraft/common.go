@@ -25,6 +25,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClientID int
+	Seq      int
 }
 
 type GetReply struct {

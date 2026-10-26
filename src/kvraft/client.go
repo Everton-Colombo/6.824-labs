@@ -10,6 +10,8 @@ import (
 type Clerk struct {
 	servers       []*labrpc.ClientEnd
 	currentLeader int
+	clientId      int
+	seq           int
 	// You will have to modify this struct.
 }
 
@@ -24,6 +26,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.currentLeader = 0
+	ck.clientId = int(nrand())
+	ck.seq = 0
 	// You'll have to add code here.
 	return ck
 }
@@ -41,7 +45,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function
 	madeContact := false
-	getArgs := GetArgs{Key: key}
+	ck.seq++
+	getArgs := GetArgs{Key: key, ClientID: ck.clientId, Seq: ck.seq}
 	var getReply GetReply
 	for !madeContact {
 		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &getReply)

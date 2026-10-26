@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"../labgob"
 	"../labrpc"
@@ -23,9 +24,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Name  string // "Get", "Put" or "Append"
-	Key   string
-	Value string
+	ClientID int
+	Seq      int
+	Name     string // "Get", "Put" or "Append"
+	Key      string
+	Value    string
 }
 
 type KVServer struct {
@@ -39,7 +42,7 @@ type KVServer struct {
 
 	// Your definitions here.
 	kvStore            map[string]string
-	registeredCommands map[int]chan raft.ApplyMsg // command index -> channel
+	registeredCommands map[Op]chan raft.ApplyMsg // command index -> channel
 
 }
 
@@ -48,33 +51,56 @@ func (kv *KVServer) applyMsgHandler() {
 		msg := <-kv.applyCh
 
 		kv.mu.Lock()
-		for registeredCmdIdx, registeredCmdCh := range kv.registeredCommands {
-			if msg.CommandIndex == registeredCmdIdx {
+		defer kv.mu.Unlock()
+		for registeredCmd, registeredCmdCh := range kv.registeredCommands {
+			if msg.Command == registeredCmd {
 				registeredCmdCh <- msg
+				break
 			}
 		}
-		kv.mu.Unlock()
 	}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	cmdIdx, _, isLeader := kv.rf.Start(Op{Name: "Get", Key: args.Key})
+	_, isLeader := kv.rf.GetState()
 	if !isLeader {
 		reply.Err = ErrWrongLeader
 		return
 	}
 
+	command := Op{
+		Name:     "Get",
+		Key:      args.Key,
+		ClientID: args.ClientID,
+		Seq:      args.Seq,
+	}
+
 	kv.mu.Lock()
 	msgChan := make(chan raft.ApplyMsg)
-	kv.registeredCommands[cmdIdx] = msgChan
+	kv.registeredCommands[command] = msgChan
 	kv.mu.Unlock()
-	<-msgChan
 
-	reply.Err = OK
-	reply.Value = kv.kvStore[args.Key]
+	_, _, isLeader = kv.rf.Start(command)
+
+OuterLoop:
+	for {
+		select {
+		case <-msgChan:
+			reply.Err = OK
+			reply.Value = kv.kvStore[args.Key]
+			break OuterLoop
+		case <-time.After(250 * time.Millisecond):
+			_, isLeader := kv.rf.GetState()
+			if !isLeader {
+				reply.Err = ErrWrongLeader
+				break OuterLoop
+			}
+		}
+	}
+
 	kv.mu.Lock()
-	delete(kv.registeredCommands, cmdIdx)
+	delete(kv.registeredCommands, command)
 	kv.mu.Unlock()
 }
 
