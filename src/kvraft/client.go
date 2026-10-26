@@ -48,10 +48,10 @@ func (ck *Clerk) Get(key string) string {
 	var response RequestResponse
 	for {
 		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &args, &response)
-		if response.Err == ErrWrongLeader || !ok {
-			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
-		} else {
+		if ok && response.Err == OK {
 			return response.Value
+		} else if response.Err == ErrWrongLeader {
+			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		}
 	}
 }
@@ -70,10 +70,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	var response RequestResponse
 	for {
 		ok := ck.servers[ck.currentLeader].Call("KVServer.PutAppend", &args, &response)
-		if response.Err == ErrWrongLeader || !ok {
-			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
-		} else {
+		if ok && response.Err == OK {
 			return
+		} else if response.Err == ErrWrongLeader {
+			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		}
 	}
 }

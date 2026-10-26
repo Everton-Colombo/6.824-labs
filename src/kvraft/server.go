@@ -37,6 +37,11 @@ type Op struct {
 	Value     string
 }
 
+type ClientReponseRecord struct {
+	Seq   int
+	Value string
+}
+
 type KVServer struct {
 	mu      sync.Mutex
 	me      int
@@ -47,9 +52,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	kvStore         map[string]string
-	waitingRequests map[RequestId]chan RequestResponse // command index -> channel
-
+	kvStore                map[string]string
+	waitingRequests        map[RequestId]chan RequestResponse // command index -> channel
+	lastResponseValueCache map[int]ClientReponseRecord
 }
 
 func (kv *KVServer) applyMsgHandler() {
@@ -63,15 +68,21 @@ func (kv *KVServer) applyMsgHandler() {
 		response := RequestResponse{Err: OK}
 		kv.mu.Lock()
 		cmd := msg.Command.(Op)
-		switch cmd.Name {
-		case "Put":
-			kv.kvStore[cmd.Key] = cmd.Value
-		case "Append":
-			kv.kvStore[cmd.Key] += cmd.Value
-		case "Get":
-		}
-		response.Value = kv.kvStore[cmd.Key]
+		cachedRercord := kv.lastResponseValueCache[cmd.RequestId.ClientId]
+		if cachedRercord.Seq >= cmd.RequestId.Seq {
+			response.Value = cachedRercord.Value
+		} else {
+			switch cmd.Name {
+			case "Put":
+				kv.kvStore[cmd.Key] = cmd.Value
+			case "Append":
+				kv.kvStore[cmd.Key] += cmd.Value
+			case "Get":
+			}
+			response.Value = kv.kvStore[cmd.Key]
 
+			kv.lastResponseValueCache[cmd.RequestId.ClientId] = ClientReponseRecord{Seq: cmd.RequestId.Seq, Value: response.Value}
+		}
 		if ch, ok := kv.waitingRequests[cmd.RequestId]; ok {
 			delete(kv.waitingRequests, cmd.RequestId)
 			ch <- response
@@ -179,6 +190,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.kvStore = make(map[string]string)
 	kv.waitingRequests = make(map[RequestId]chan RequestResponse)
+	kv.lastResponseValueCache = make(map[int]ClientReponseRecord)
 
 	// You may need initialization code here.
 	go kv.applyMsgHandler()
