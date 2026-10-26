@@ -44,10 +44,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) Get(key string) string {
 	ck.seq++
-	getArgs := GetArgs{Key: key, ClientID: ck.clientId, Seq: ck.seq}
+	args := GetArgs{Key: key, ClientID: ck.clientId, Seq: ck.seq}
 	var response RequestResponse
 	for {
-		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &response)
+		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &args, &response)
 		if response.Err == ErrWrongLeader || !ok {
 			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		} else {
@@ -66,10 +66,10 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.seq++
-	getArgs := PutAppendArgs{Key: key, Value: value, Op: op, ClientID: ck.clientId, Seq: ck.seq}
+	args := PutAppendArgs{Key: key, Value: value, Op: op, ClientID: ck.clientId, Seq: ck.seq}
 	var response RequestResponse
 	for {
-		ok := ck.servers[ck.currentLeader].Call("KVServer.Get", &getArgs, &response)
+		ok := ck.servers[ck.currentLeader].Call("KVServer.PutAppend", &args, &response)
 		if response.Err == ErrWrongLeader || !ok {
 			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		} else {
