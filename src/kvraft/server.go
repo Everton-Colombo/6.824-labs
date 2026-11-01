@@ -54,6 +54,7 @@ type KVServer struct {
 	// Your definitions here.
 	kvStore                map[string]string
 	waitingRequests        map[RequestId]chan RequestResponse // command index -> channel
+	waitingIndex           map[int]RequestId                  // raft idx -> RequestId expeting to be there
 	lastResponseValueCache map[int]ClientReponseRecord
 }
 
@@ -69,6 +70,16 @@ func (kv *KVServer) applyMsgHandler() {
 		kv.mu.Lock()
 		cmd := msg.Command.(Op)
 		cachedRercord := kv.lastResponseValueCache[cmd.RequestId.ClientId]
+
+		if rid, ok := kv.waitingIndex[msg.CommandIndex]; ok {
+			delete(kv.waitingIndex, msg.CommandIndex)
+			if rid != cmd.RequestId {
+				if ch, ok2 := kv.waitingRequests[rid]; ok2 {
+					delete(kv.waitingRequests, rid)
+					ch <- RequestResponse{Err: ErrWrongLeader}
+				}
+			}
+		}
 		if cachedRercord.Seq >= cmd.RequestId.Seq {
 			response.Value = cachedRercord.Value
 		} else {
@@ -87,17 +98,18 @@ func (kv *KVServer) applyMsgHandler() {
 			delete(kv.waitingRequests, cmd.RequestId)
 			ch <- response
 		}
+
 		kv.mu.Unlock()
 	}
 }
 
 func (kv *KVServer) startAndWaitForApply(op Op) RequestResponse {
-	waitCh := make(chan RequestResponse)
+	waitCh := make(chan RequestResponse, 1)
 	kv.mu.Lock()
 	kv.waitingRequests[op.RequestId] = waitCh
 	kv.mu.Unlock()
 
-	_, _, isLeader := kv.rf.Start(op)
+	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		kv.mu.Lock()
 		delete(kv.waitingRequests, op.RequestId)
@@ -105,12 +117,17 @@ func (kv *KVServer) startAndWaitForApply(op Op) RequestResponse {
 		return RequestResponse{Err: ErrWrongLeader}
 	}
 
+	kv.mu.Lock()
+	kv.waitingIndex[index] = op.RequestId
+	kv.mu.Unlock()
+
 	select {
 	case response := <-waitCh:
 		return response
 	case <-time.After(Timeout):
 		kv.mu.Lock()
 		delete(kv.waitingRequests, op.RequestId)
+		delete(kv.waitingIndex, index)
 		kv.mu.Unlock()
 		return RequestResponse{Err: ErrTimeout}
 	}
@@ -191,6 +208,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.kvStore = make(map[string]string)
 	kv.waitingRequests = make(map[RequestId]chan RequestResponse)
 	kv.lastResponseValueCache = make(map[int]ClientReponseRecord)
+	kv.waitingIndex = make(map[int]RequestId)
 
 	// You may need initialization code here.
 	go kv.applyMsgHandler()
