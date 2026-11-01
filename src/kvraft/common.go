@@ -4,6 +4,7 @@ const (
 	OK             = "OK"
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeout     = "ErrTimeout"
 )
 
 type Err string
@@ -16,18 +17,18 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-}
-
-type PutAppendReply struct {
-	Err Err
+	ClientID int
+	Seq      int
 }
 
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	ClientID int
+	Seq      int
 }
 
-type GetReply struct {
-	Err   Err
+type RequestResponse struct {
+	Err   string
 	Value string
 }
