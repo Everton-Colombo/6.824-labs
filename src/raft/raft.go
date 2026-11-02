@@ -103,6 +103,8 @@ type Raft struct {
 	// Volatile state on leaders:
 	nextIndex  []int // for each server, idx of the next log entry to send to that server
 	matchIndex []int // for each server, idx of the highest log entry known to be replicated on server
+
+	trimmedEntriesCount int
 }
 
 func (rf *Raft) updateRole(newRole ServerRole) {
@@ -142,6 +144,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.trimmedEntriesCount)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -168,15 +171,18 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var currentTerm int
 	var votedFor int
+	var trimmedEntriesCount int
 	var log []LogEntry
 	if d.Decode(&currentTerm) == nil &&
 		d.Decode(&votedFor) == nil &&
+		d.Decode(&trimmedEntriesCount) == nil &&
 		d.Decode(&log) == nil {
 
 		rf.mu.Lock()
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		rf.trimmedEntriesCount = trimmedEntriesCount
 		rf.mu.Unlock()
 	}
 }
@@ -811,4 +817,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.launch()
 
 	return rf
+}
+
+func (rf *Raft) TrimLogEntries(upToIndex int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if upToIndex > rf.trimmedEntriesCount && upToIndex < len(rf.log)+rf.trimmedEntriesCount {
+		rf.trimmedEntriesCount = upToIndex
+		rf.log = rf.log[upToIndex-rf.trimmedEntriesCount:]
+		rf.persist()
+	}
+
 }
