@@ -232,7 +232,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		if len(rf.log) > 0 {
 			myLastLogTerm = rf.log[len(rf.log)-1].Term
 		}
-		myLastLogIndex := len(rf.log) - 1
+		myLastLogIndex := rf.lastLogIndex()
 
 		candidateUpToDate := args.LastLogTerm > myLastLogTerm ||
 			(args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= myLastLogIndex)
@@ -274,7 +274,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	debugLog.Printf("[%d::AppendEntries()] Received AppendEntries RPC from leader %d for term %d.\n", rf.me, args.LeaderId, args.Term)
 	reply.XTerm = -1
 	reply.XIndex = -1
-	reply.XLen = len(rf.log)
+	reply.XLen = rf.lastLogIndex() + 1
 
 	reply.PeerTerm = rf.currentTerm
 
@@ -298,26 +298,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.resetElectionTimer()
 
-	if len(rf.log) <= args.PrevLogIndex || (args.PrevLogIndex >= 0 && rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
+	prevIndex := rf.toLogIdx(args.PrevLogIndex)
+	missingPrev := args.PrevLogIndex > rf.lastLogIndex() || (args.PrevLogIndex >= 0 && prevIndex < 0)
+	if missingPrev || (args.PrevLogIndex >= 0 && rf.log[prevIndex].Term != args.PrevLogTerm) {
 		// Rejected due to log incosistency.
 
 		debugLog.Printf("[%d::AppendEntries()] Rejected AE.\n", rf.me)
 		reply.Success = false
 
-		if len(rf.log) <= args.PrevLogIndex {
+		if missingPrev {
 			reply.XTerm = -1
 			reply.XIndex = -1
-			reply.XLen = len(rf.log)
 		} else {
-			reply.XTerm = rf.log[args.PrevLogIndex].Term
+			reply.XTerm = rf.log[prevIndex].Term
 			for idx, entry := range rf.log {
 				if entry.Term == reply.XTerm {
-					reply.XIndex = idx
+					reply.XIndex = idx + rf.trimmedEntriesCount
 					break
 				}
 			}
-			reply.XLen = len(rf.log)
 		}
+		reply.XLen = rf.lastLogIndex() + 1
 
 		return
 	}
@@ -325,9 +326,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Append entries from prevlogindex
 	if len(args.Entries) != 0 {
 		var i, aeIdx int
-		for i, aeIdx = args.PrevLogIndex+1, 0; i < len(rf.log) && aeIdx < len(args.Entries); i, aeIdx = i+1, aeIdx+1 {
-			if rf.log[i] != args.Entries[aeIdx] {
-				rf.log = rf.log[:i]
+		for i, aeIdx = args.PrevLogIndex+1, 0; i <= rf.lastLogIndex() && aeIdx < len(args.Entries); i, aeIdx = i+1, aeIdx+1 {
+			if rf.log[rf.toLogIdx(i)] != args.Entries[aeIdx] {
+				rf.log = rf.log[:rf.toLogIdx(i)]
 				break
 			}
 		}
@@ -339,7 +340,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Update commitIndex
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		rf.commitIndex = min(args.LeaderCommit, rf.lastLogIndex())
 		rf.applyCond.Broadcast() // kick off applyier goroutine
 	}
 
@@ -404,7 +405,7 @@ func (rf *Raft) applyOp() {
 				// rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
-					Command:      rf.log[i].Command,
+					Command:      rf.log[rf.toLogIdx(i)].Command,
 					CommandIndex: i,
 				}
 				// rf.applyCond.L.Lock()
@@ -453,13 +454,8 @@ func (rf *Raft) runElection() {
 			// LastLogIndex: len(rf.log) - 1,
 			// LastLogTerm:  rf.log[len(rf.log)-1].Term,
 		}
-		if len(rf.log) > 0 {
-			args.LastLogIndex = len(rf.log) - 1
-			args.LastLogTerm = rf.log[len(rf.log)-1].Term
-		} else {
-			args.LastLogIndex = -1
-			args.LastLogTerm = -1
-		}
+		args.LastLogIndex = rf.lastLogIndex()
+		args.LastLogTerm = rf.log[len(rf.log)-1].Term
 		rf.mu.Unlock()
 
 		go func(serverIdx int) {
@@ -530,7 +526,7 @@ func (rf *Raft) runElection() {
 			if i == rf.me {
 				continue
 			}
-			rf.nextIndex[i] = len(rf.log)
+			rf.nextIndex[i] = rf.lastLogIndex() + 1
 			rf.matchIndex[i] = -1
 		}
 
@@ -630,7 +626,7 @@ func (rf *Raft) handleAeRejection(reply AppendEntriesReply, peerIdx int) {
 			lastLeaderIdxOfXTerm := -1
 			for idx, entry := range rf.log {
 				if entry.Term == reply.XTerm {
-					lastLeaderIdxOfXTerm = idx
+					lastLeaderIdxOfXTerm = idx + rf.trimmedEntriesCount
 				}
 			}
 
@@ -649,8 +645,8 @@ func (rf *Raft) handleAeRejection(reply AppendEntriesReply, peerIdx int) {
 }
 
 func (rf *Raft) updateCommitIndex() {
-	for logIdx := len(rf.log) - 1; logIdx > rf.commitIndex; logIdx-- {
-		if rf.log[logIdx].Term != rf.currentTerm {
+	for logIdx := rf.lastLogIndex(); logIdx > rf.commitIndex; logIdx-- {
+		if rf.log[rf.toLogIdx(logIdx)].Term != rf.currentTerm {
 			// Leaders may not commit entries with older terms (figure 8 safety violation)
 			break
 		}
@@ -687,12 +683,12 @@ func (rf *Raft) replicateTo(peerIdx int) {
 		LeaderId:     rf.me,
 		LeaderCommit: rf.commitIndex,
 	}
-	if rf.nextIndex[peerIdx] > 0 {
+	if rf.nextIndex[peerIdx] > rf.trimmedEntriesCount {
 		args.PrevLogIndex = rf.nextIndex[peerIdx] - 1
-		args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
-		args.Entries = append([]LogEntry{}, rf.log[rf.nextIndex[peerIdx]:]...)
+		args.PrevLogTerm = rf.log[rf.toLogIdx(args.PrevLogIndex)].Term
+		args.Entries = append([]LogEntry{}, rf.log[rf.toLogIdx(rf.nextIndex[peerIdx]):]...)
 	} else {
-		args.PrevLogIndex = -1
+		args.PrevLogIndex = rf.trimmedEntriesCount - 1
 		args.PrevLogTerm = -1
 	}
 	rf.mu.Unlock()
@@ -750,7 +746,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if !isLeader {
 		return -1, -1, isLeader
 	}
-	index := len(rf.log)
+	index := rf.lastLogIndex() + 1
 	term := rf.currentTerm
 
 	rf.log = append(rf.log, LogEntry{
@@ -823,10 +819,18 @@ func (rf *Raft) TrimLogEntries(upToIndex int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if upToIndex > rf.trimmedEntriesCount && upToIndex < len(rf.log)+rf.trimmedEntriesCount {
+	if upToIndex > rf.trimmedEntriesCount && upToIndex <= rf.lastLogIndex() {
+		rf.log = rf.log[rf.toLogIdx(upToIndex):]
 		rf.trimmedEntriesCount = upToIndex
-		rf.log = rf.log[upToIndex-rf.trimmedEntriesCount:]
 		rf.persist()
 	}
 
+}
+
+func (rf *Raft) toLogIdx(idx int) int {
+	return idx - rf.trimmedEntriesCount
+}
+
+func (rf *Raft) lastLogIndex() int {
+	return len(rf.log) - 1 + rf.trimmedEntriesCount
 }
