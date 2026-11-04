@@ -175,8 +175,8 @@ func (rf *Raft) readPersist(data []byte) {
 	var log []LogEntry
 	if d.Decode(&currentTerm) == nil &&
 		d.Decode(&votedFor) == nil &&
-		d.Decode(&trimmedEntriesCount) == nil &&
-		d.Decode(&log) == nil {
+		d.Decode(&log) == nil &&
+		d.Decode(&trimmedEntriesCount) == nil {
 
 		rf.mu.Lock()
 		rf.currentTerm = currentTerm
