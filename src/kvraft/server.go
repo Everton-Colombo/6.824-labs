@@ -84,6 +84,15 @@ func (kv *KVServer) applyMsgHandler() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
 
+		if msg.SnapshotValid {
+			if kv.rf.CondInstallSnapshot(msg.SnapshotIndex, msg.SnapshotTerm, msg.Snapshot) {
+				kv.mu.Lock()
+				kv.decodeSnapshot(msg.Snapshot)
+				kv.mu.Unlock()
+			}
+			continue
+		}
+
 		if !msg.CommandValid {
 			continue
 		}
