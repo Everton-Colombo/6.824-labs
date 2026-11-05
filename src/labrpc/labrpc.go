@@ -72,6 +72,10 @@ type replyMsg struct {
 	reply []byte
 }
 
+type RPCClient interface {
+	Call(svcMeth string, args interface{}, reply interface{}) bool
+}
+
 type ClientEnd struct {
 	endname interface{}   // this end-point's name
 	ch      chan reqMsg   // copy of Network.endCh

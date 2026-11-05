@@ -8,7 +8,7 @@ import (
 )
 
 type Clerk struct {
-	servers       []*labrpc.ClientEnd
+	servers       []labrpc.RPCClient
 	currentLeader int
 	clientId      int
 	seq           int
@@ -22,7 +22,7 @@ func nrand() int64 {
 	return x
 }
 
-func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
+func MakeClerk(servers []labrpc.RPCClient) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	ck.currentLeader = 0

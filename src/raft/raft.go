@@ -76,7 +76,7 @@ const HeartBeatTimeout = 150 * time.Millisecond
 type Raft struct {
 	mu        sync.Mutex // Lock to protect shared access to this peer's state
 	applyCond *sync.Cond
-	peers     []*labrpc.ClientEnd //  // FollowerRPC end points of all peers
+	peers     []labrpc.RPCClient //  // FollowerRPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
@@ -889,7 +889,7 @@ func (rf *Raft) killed() bool {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
+func Make(peers []labrpc.RPCClient, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
