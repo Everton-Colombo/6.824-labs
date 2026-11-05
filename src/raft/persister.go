@@ -9,16 +9,31 @@ package raft
 // test with the original before submitting.
 //
 
-import "sync"
+import (
+	"os"
+	"path/filepath"
+	"sync"
+)
 
 type Persister struct {
 	mu        sync.Mutex
 	raftstate []byte
 	snapshot  []byte
+	dir       string
 }
 
 func MakePersister() *Persister {
 	return &Persister{}
+}
+
+func MakeFilePersister(dir string) (*Persister, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	ps := &Persister{dir: dir}
+	ps.raftstate, _ = os.ReadFile(filepath.Join(dir, "raft.state"))
+	ps.snapshot, _ = os.ReadFile(filepath.Join(dir, "kv.snap"))
+	return ps, nil
 }
 
 func (ps *Persister) Copy() *Persister {
@@ -34,6 +49,9 @@ func (ps *Persister) SaveRaftState(state []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.raftstate = state
+	if ps.dir != "" {
+		_ = os.WriteFile(filepath.Join(ps.dir, "raft.state"), state, 0o644)
+	}
 }
 
 func (ps *Persister) ReadRaftState() []byte {
@@ -55,6 +73,10 @@ func (ps *Persister) SaveStateAndSnapshot(state []byte, snapshot []byte) {
 	defer ps.mu.Unlock()
 	ps.raftstate = state
 	ps.snapshot = snapshot
+	if ps.dir != "" {
+		_ = os.WriteFile(filepath.Join(ps.dir, "raft.state"), state, 0o644)
+		_ = os.WriteFile(filepath.Join(ps.dir, "kv.snap"), snapshot, 0o644)
+	}
 }
 
 func (ps *Persister) ReadSnapshot() []byte {
