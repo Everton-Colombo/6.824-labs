@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
-	"../raft"
+	"mc714/src/labgob"
+	"mc714/src/labrpc"
+	"mc714/src/raft"
 )
 
 const Timeout = 5 * time.Second

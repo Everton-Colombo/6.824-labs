@@ -22,22 +22,15 @@ import (
 	"io"
 	"log"
 	"math/rand"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
+	"mc714/src/labgob"
+	"mc714/src/labrpc"
 )
 
-var debugLog = func() *log.Logger {
-	_, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return log.New(io.Discard, "", 0)
-	}
-	return log.New(io.Discard, "", log.Lmicroseconds)
-}()
+var debugLog = log.New(io.Discard, "", 0)
 
 // import "bytes"
 // import "../labgob"
