@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -58,9 +59,39 @@ type KVServer struct {
 	lastResponseValueCache map[int]ClientReponseRecord
 }
 
+func (kv *KVServer) takeSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kvStore)
+	e.Encode(kv.lastResponseValueCache)
+
+	return w.Bytes()
+}
+
+func (kv *KVServer) decodeSnapshot(data []byte) {
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var kvStore map[string]string
+	var lrvCache map[int]ClientReponseRecord
+	if d.Decode(&kvStore) == nil &&
+		d.Decode(&lrvCache) == nil {
+		kv.kvStore = kvStore
+		kv.lastResponseValueCache = lrvCache
+	}
+}
+
 func (kv *KVServer) applyMsgHandler() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
+
+		if msg.SnapshotValid {
+			if kv.rf.CondInstallSnapshot(msg.SnapshotIndex, msg.SnapshotTerm, msg.Snapshot) {
+				kv.mu.Lock()
+				kv.decodeSnapshot(msg.Snapshot)
+				kv.mu.Unlock()
+			}
+			continue
+		}
 
 		if !msg.CommandValid {
 			continue
@@ -93,6 +124,12 @@ func (kv *KVServer) applyMsgHandler() {
 			response.Value = kv.kvStore[cmd.Key]
 
 			kv.lastResponseValueCache[cmd.RequestId.ClientId] = ClientReponseRecord{Seq: cmd.RequestId.Seq, Value: response.Value}
+
+			// Snapshot if needed
+			if kv.maxraftstate != -1 && kv.rf.RaftStateSize() >= kv.maxraftstate {
+				snapshot := kv.takeSnapshot()
+				kv.rf.Snapshot(msg.CommandIndex, snapshot)
+			}
 		}
 		if ch, ok := kv.waitingRequests[cmd.RequestId]; ok {
 			delete(kv.waitingRequests, cmd.RequestId)
@@ -200,8 +237,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// You may need initialization code here.
-
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
@@ -210,7 +245,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.lastResponseValueCache = make(map[int]ClientReponseRecord)
 	kv.waitingIndex = make(map[int]RequestId)
 
-	// You may need initialization code here.
+	if data := persister.ReadSnapshot(); len(data) > 0 {
+		kv.decodeSnapshot(data)
+	}
+
 	go kv.applyMsgHandler()
 
 	return kv
