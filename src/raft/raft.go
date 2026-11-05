@@ -801,6 +801,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.commitIndex = rf.trimmedEntriesCount
+	rf.lastApplied = rf.trimmedEntriesCount
 
 	rf.launch()
 
