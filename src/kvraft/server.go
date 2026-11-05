@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -58,6 +59,15 @@ type KVServer struct {
 	lastResponseValueCache map[int]ClientReponseRecord
 }
 
+func (kv *KVServer) takeSnapshot() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.kvStore)
+	e.Encode(kv.lastResponseValueCache)
+
+	return w.Bytes()
+}
+
 func (kv *KVServer) applyMsgHandler() {
 	for !kv.killed() {
 		msg := <-kv.applyCh
@@ -93,6 +103,12 @@ func (kv *KVServer) applyMsgHandler() {
 			response.Value = kv.kvStore[cmd.Key]
 
 			kv.lastResponseValueCache[cmd.RequestId.ClientId] = ClientReponseRecord{Seq: cmd.RequestId.Seq, Value: response.Value}
+
+			// Snapshot if needed
+			if kv.maxraftstate != -1 && kv.rf.RaftStateSize() >= kv.maxraftstate {
+				snapshot := kv.takeSnapshot()
+				kv.rf.Snapshot(msg.CommandIndex, snapshot)
+			}
 		}
 		if ch, ok := kv.waitingRequests[cmd.RequestId]; ok {
 			delete(kv.waitingRequests, cmd.RequestId)

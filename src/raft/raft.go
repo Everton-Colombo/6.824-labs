@@ -127,26 +127,18 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.currentRole == Leader
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
-	// Your code here (2C).interface
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+func (rf *Raft) encodeState() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	e.Encode(rf.trimmedEntriesCount)
-	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	return w.Bytes()
+}
+
+func (rf *Raft) persist() {
+	rf.persister.SaveRaftState(rf.encodeState())
 }
 
 // restore previously persisted state.
@@ -171,8 +163,8 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var currentTerm int
 	var votedFor int
-	var trimmedEntriesCount int
 	var log []LogEntry
+	var trimmedEntriesCount int
 	if d.Decode(&currentTerm) == nil &&
 		d.Decode(&votedFor) == nil &&
 		d.Decode(&log) == nil &&
@@ -402,13 +394,13 @@ func (rf *Raft) applyOp() {
 			debugLog.Printf("[%d::applyOp()] Applying log entries from index %d to %d.\n", rf.me, rf.lastApplied+1, rf.commitIndex)
 			for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
 				rf.lastApplied++
-				// rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
+				rf.applyCond.L.Unlock() // Unlock before sending to applyCh to avoid potential deadlocks
 				rf.applyCh <- ApplyMsg{
 					CommandValid: true,
 					Command:      rf.log[rf.toLogIdx(i)].Command,
 					CommandIndex: i,
 				}
-				// rf.applyCond.L.Lock()
+				rf.applyCond.L.Lock()
 			}
 		} else {
 			rf.applyCond.Wait()
@@ -815,22 +807,31 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func (rf *Raft) TrimLogEntries(upToIndex int) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	if upToIndex > rf.trimmedEntriesCount && upToIndex <= rf.lastLogIndex() {
-		rf.log = rf.log[rf.toLogIdx(upToIndex):]
-		rf.trimmedEntriesCount = upToIndex
-		rf.persist()
-	}
-
-}
-
 func (rf *Raft) toLogIdx(idx int) int {
 	return idx - rf.trimmedEntriesCount
 }
 
 func (rf *Raft) lastLogIndex() int {
 	return len(rf.log) - 1 + rf.trimmedEntriesCount
+}
+
+func (rf *Raft) Snapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if index <= rf.trimmedEntriesCount || index > rf.lastLogIndex() ||
+		index > rf.commitIndex {
+		return
+	}
+
+	rf.log = append([]LogEntry(nil), rf.log[rf.toLogIdx(index):]...)
+	rf.trimmedEntriesCount = index
+	rf.persister.SaveStateAndSnapshot(rf.encodeState(), snapshot)
+}
+
+func (rf *Raft) RaftStateSize() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.persister.RaftStateSize()
 }
