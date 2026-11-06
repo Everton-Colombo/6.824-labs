@@ -1,6 +1,6 @@
 package kvraft
 
-import "../labrpc"
+import "mc714/src/labrpc"
 import "testing"
 import "os"
 
@@ -11,7 +11,7 @@ import "math/rand"
 import "encoding/base64"
 import "sync"
 import "runtime"
-import "../raft"
+import "mc714/src/raft"
 import "fmt"
 import "time"
 import "sync/atomic"
@@ -31,8 +31,8 @@ func makeSeed() int64 {
 }
 
 // Randomize server handles
-func random_handles(kvh []*labrpc.ClientEnd) []*labrpc.ClientEnd {
-	sa := make([]*labrpc.ClientEnd, len(kvh))
+func random_handles(kvh []labrpc.RPCClient) []labrpc.RPCClient {
+	sa := make([]labrpc.RPCClient, len(kvh))
 	copy(sa, kvh)
 	for i := range sa {
 		j := rand.Intn(i + 1)
@@ -193,7 +193,7 @@ func (cfg *config) makeClient(to []int) *Clerk {
 	defer cfg.mu.Unlock()
 
 	// a fresh set of ClientEnds.
-	ends := make([]*labrpc.ClientEnd, cfg.n)
+	ends := make([]labrpc.RPCClient, cfg.n)
 	endnames := make([]string, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		endnames[j] = randstring(20)
@@ -294,7 +294,7 @@ func (cfg *config) StartServer(i int) {
 	}
 
 	// a fresh set of ClientEnds.
-	ends := make([]*labrpc.ClientEnd, cfg.n)
+	ends := make([]labrpc.RPCClient, cfg.n)
 	for j := 0; j < cfg.n; j++ {
 		ends[j] = cfg.net.MakeEnd(cfg.endnames[i][j])
 		cfg.net.Connect(cfg.endnames[i][j], j)

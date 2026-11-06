@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"../labgob"
-	"../labrpc"
-	"../raft"
+	"mc714/src/labgob"
+	"mc714/src/labrpc"
+	"mc714/src/raft"
 )
 
 const Timeout = 5 * time.Second
@@ -228,7 +228,11 @@ func (kv *KVServer) killed() bool {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
-func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *KVServer {
+func (kv *KVServer) Raft() *raft.Raft {
+	return kv.rf
+}
+
+func StartKVServer(servers []labrpc.RPCClient, me int, persister *raft.Persister, maxraftstate int) *KVServer {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})

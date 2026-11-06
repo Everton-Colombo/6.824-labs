@@ -49,7 +49,7 @@ package labrpc
 //   pass svc to srv.AddService()
 //
 
-import "../labgob"
+import "mc714/src/labgob"
 import "bytes"
 import "reflect"
 import "sync"
@@ -70,6 +70,10 @@ type reqMsg struct {
 type replyMsg struct {
 	ok    bool
 	reply []byte
+}
+
+type RPCClient interface {
+	Call(svcMeth string, args interface{}, reply interface{}) bool
 }
 
 type ClientEnd struct {
