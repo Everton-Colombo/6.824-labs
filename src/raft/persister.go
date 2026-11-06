@@ -45,12 +45,22 @@ func (ps *Persister) Copy() *Persister {
 	return np
 }
 
+// ponytail: temp+rename survives a crash mid-write; no fsync, so a power loss
+// can still drop the last write. Add f.Sync() + directory sync if that matters.
+func (ps *Persister) writeFile(name string, data []byte) {
+	tmp := filepath.Join(ps.dir, name+".tmp")
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, filepath.Join(ps.dir, name))
+}
+
 func (ps *Persister) SaveRaftState(state []byte) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.raftstate = state
 	if ps.dir != "" {
-		_ = os.WriteFile(filepath.Join(ps.dir, "raft.state"), state, 0o644)
+		ps.writeFile("raft.state", state)
 	}
 }
 
@@ -74,8 +84,8 @@ func (ps *Persister) SaveStateAndSnapshot(state []byte, snapshot []byte) {
 	ps.raftstate = state
 	ps.snapshot = snapshot
 	if ps.dir != "" {
-		_ = os.WriteFile(filepath.Join(ps.dir, "raft.state"), state, 0o644)
-		_ = os.WriteFile(filepath.Join(ps.dir, "kv.snap"), snapshot, 0o644)
+		ps.writeFile("raft.state", state)
+		ps.writeFile("kv.snap", snapshot)
 	}
 }
 
