@@ -27,10 +27,11 @@
 
 % TODO marker, visible in the PDF; remove before submission
 \newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+\newcommand{\everton}[1]{\textcolor{orange}{\textbf{[Everton:} #1\textbf{]}}}
 
 \begin{document}
 
-\title{Raft and KV-Raft: Consensus and State Machine Replication}
+\title{Raft and Fault-Tolerant Key/Value Storage: Consensus and State Machine Replication}
 
 \author{
 \IEEEauthorblockN{Everton Romanzini Colombo}
@@ -61,19 +62,41 @@ result (linearizable under faults; latency cost under loss/delay).}
 % ===========================================================================
 \section{Introduction}
 % ===========================================================================
-\todo{Motivation: why consensus matters; why Raft (understandable) and
-replicated state machines.}
-\todo{Objectives: implement two complementary algorithms from the assignment
-(leader election [election theme] and consensus/replication [consensus theme])
-and evaluate them experimentally.}
-\todo{Contributions: (i) full Raft (2A--2C) with persistence and snapshots;
-(ii) linearizable KV with per-client deduplication; (iii) container packaging
-with TCP RPC and an HTTP API; (iv) test suite and reproducible experiments with
-linearizability checked by Porcupine.}
-\todo{Paper organization (one paragraph).}
+Replicating a service across several machines is the standard way to make systems resilient to machine crashes, but replication alone is not enough: the replicas must agree on a single order of operations, and they must keep agreeing while links drop messages, nodes leave and reenter the grid, leaders disappear, among other failures. Many consensus algorithms that provide a solution to this problem exist today, and maintaining a log of agreed-upon state-machine operations is a common implementation approach. The Raft algorithm~\cite{raft2014} is a widely used consensus protocol that is designed to be understandable and easy to teach, and it is the basis of many production systems, including etcd, Consul, and CockroachDB \everton{cite}. The practical question, however, is not only whether a protocol can be implemented correctly, but what that correctness costs in throughput, tail latency, and recovery time when faults actually happen.
+% \todo{If space allows, open with a concrete use case for a linearizable store
+% (e.g., a lock or configuration service) and state why a weaker consistency
+% model would not do.}
+
+With this in mind, this project had two main elements: 1. Implementing Raft, as well as a simple key-value store system on top of it, with the goal of understanding in detail how this consensus algorithm works; and 2. Building an experimental harness on top of these implementations to measure the cost of fault tolerance in a realistic environment. By implementing the resulting system, key distributed systems concepts were explored, such as leader election, consensus, replication and consistency, fault detection and tolerance, peer-to-peer communication, among others. 
+
+The whole system runs as independent OCI containers orchestrated by
+Docker Compose, with real TCP communication between nodes and an HTTP/JSON
+interface for clients. \everton{Find a better place for this paragraph}
+
+\subsection*{Basis and contributions}
+The starting point for this project was the framework supplied by MIT's 6.824 (2020) course labs 2 and 3~\cite{mit6824}. It provided stub APIs, an in-memory simulated network (\texttt{labrpc}), a gob (Go's serialization library) wrapper (\texttt{labgob}), the Porcupine linearizability checker~\cite{porcupine}, and, crucially, a comprehensive and thorough set of tests. This skeleton was kept intact and was used to guide and test our implementation; the protocol and service implementations, the runtime transport, persistence, container packaging, observability, and the whole experimental apparatus were written by us.  Concretely, this project's contributions are:
+
+\begin{itemize}
+  \item \textbf{In-House Raft Implementation:} following MIT 6.824's labs 2A--2C + 3B, our custom raft implementation closely follows Raft's extended paper guidelines, including  leader election with randomized timeouts, the log up-to-date voting rule, log replication with fast backup, safety rules for commitment across terms, persistent state restored after a crash, and log compaction with snapshots.
+  \item \textbf{Fault-tolerant Key/Value Service Implementation:} following MIT 6.824's labs 3A--3B, a replicated key-value store service was built on top of the Raft implementation built before. It includes client-side leader discovery with retry, response caching, and state snapshotting.
+%   \item \textbf{Configurable Transport Layer}: a \texttt{RPCClient} interface so the same Raft and KV code runs over the simulated \texttt{labrpc} network in the test suite and over real \texttt{net/rpc}/TCP with explicit deadlines in the deployed system, without touching the protocol code. The inherited 2A--3B suites still pass unmodified.
+  \item \textbf{Deployment Setup}: the systems' transport layer, ports, and persistence behavior were made configurable via environment variables, so that the same code can run both in the labs' test suites (over the simulated \texttt{labrpc} network) and in a containerized deployment (over real \texttt{net/rpc}/TCP). A Dockerfile for container image configuration, and a \texttt{compose.yaml} file for setting up multiple nodes were provided.
+  \item \textbf{Observability and experimentation}: an HTTP API was exposed so that clients can interface with the KV application. A \texttt{/status} endpoint was also created, exposing term, leader, commit index, last log index, applied index and /snapshot sizes, plus a benchmark client and a scenario-driven experiment driver (normal operation, network delay/loss, leader crash, partition, cluster-size sweep) that record raw CSVs and check every history for linearizability with Porcupine.
+\end{itemize}
+\todo{Check that this contribution list matches the emphasis of the abstract and
+of the five-minute video, and trim it if the six-page limit becomes tight.}
+
+The experiments show that the service remains linearizable in every scenario we exercised, including 2\% packet loss, leader crashes and partitions, while making the cost of fault tolerance explicit: throughput drops by about two orders of magnitude under 50\,ms delay with 2\% loss (\everton{this seems awfully high, verigy}), failover takes roughly the election timeout, and the client-visible recovery time is dominated by the client's own RPC deadline rather than by the protocol.
+
+\todo{Confirm the numbers in the previous paragraph once the final experimental
+batch is frozen, and keep them consistent with Table~\ref{tab:res} and
+Table~\ref{tab:ttr}.}
+
+The remainder of this report is organized as follows. Section~\ref{sec:model} states the system model and the failure assumptions. Section~\ref{sec:arch} describes the architecture and the container deployment. Section~\ref{sec:algs} details the two algorithms and lists the reused code and our modifications.  Section~\ref{sec:correct} argues the correctness properties and describes the automated tests.  Section~\ref{sec:method} defines the experimental methodology and its reproducibility, Section~\ref{sec:results} presents the results, Section~\ref{sec:limits} discusses limitations and threats to validity, and Section~\ref{sec:conclusion} concludes.
 
 % ===========================================================================
 \section{System Model}
+\label{sec:model}
 % ===========================================================================
 \todo{State and justify each item below (explicit requirement in the
 assignment). Do not leave it as a bare list: justify the choices.}
@@ -109,6 +132,7 @@ eventually elected and submitted commands are eventually committed.}
 
 % ===========================================================================
 \section{Architecture}
+\label{sec:arch}
 % ===========================================================================
 \todo{Figure/diagram: HTTP client \(\rightarrow\) nodes (API :9000) and Raft
 mesh (:8000) between containers; persistent volumes.}
@@ -124,6 +148,7 @@ Table~\ref{tab:env}.}
 
 % ===========================================================================
 \section{Implemented Algorithms}
+\label{sec:algs}
 % ===========================================================================
 \todo{Make explicit that these are the two complementary algorithms: leader
 election (theme 1) and consensus/replication (theme 2).}
@@ -153,6 +178,7 @@ benchmark client and the experiment scripts.}
 
 % ===========================================================================
 \section{Correctness Properties and Tests}
+\label{sec:correct}
 % ===========================================================================
 \subsection{Safety arguments}
 \todo{Sketch the proof: leader uniqueness per term; majority intersection;
@@ -168,6 +194,7 @@ consistency. Report that everything passes (total time).}
 
 % ===========================================================================
 \section{Experimental Methodology}
+\label{sec:method}
 % ===========================================================================
 \begin{table}[t]
 \centering
@@ -205,6 +232,7 @@ raw CSVs in \texttt{scripts/experiments/}, analysis in
 
 % ===========================================================================
 \section{Results}
+\label{sec:results}
 % ===========================================================================
 \todo{Replace the values below with the final version and generate the figures
 with \texttt{scripts/analysis.ipynb}.}
@@ -284,6 +312,7 @@ serializes and where replication cost would show up (message counts).}
 
 % ===========================================================================
 \section{Limitations and Threats to Validity}
+\label{sec:limits}
 % ===========================================================================
 \todo{Containers on one host are not independent failure domains; variability
 from short runs; no batching; no PreVote; no message/byte counters; Docker
@@ -291,6 +320,7 @@ Desktop environment.}
 
 % ===========================================================================
 \section{Conclusion and Future Work}
+\label{sec:conclusion}
 % ===========================================================================
 \todo{Recap: two algorithms, correctness under faults, performance cost.
 Future work: PreVote/check-quorum, batching, lease-based reads, incremental
