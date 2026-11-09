@@ -1,0 +1,155 @@
+name: mc714-n7
+
+services:
+  node0:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node0
+    environment:
+      NODE_ID: "0"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9000:9000"
+    volumes:
+      - node0-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node1:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node1
+    environment:
+      NODE_ID: "1"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9001:9000"
+    volumes:
+      - node1-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node2:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node2
+    environment:
+      NODE_ID: "2"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9002:9000"
+    volumes:
+      - node2-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node3:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node3
+    environment:
+      NODE_ID: "3"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9003:9000"
+    volumes:
+      - node3-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node4:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node4
+    environment:
+      NODE_ID: "4"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9004:9000"
+    volumes:
+      - node4-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node5:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node5
+    environment:
+      NODE_ID: "5"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9005:9000"
+    volumes:
+      - node5-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node6:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n7-node6
+    environment:
+      NODE_ID: "6"
+      PEERS: "kvraft-n7-node0:8000,kvraft-n7-node1:8000,kvraft-n7-node2:8000,kvraft-n7-node3:8000,kvraft-n7-node4:8000,kvraft-n7-node5:8000,kvraft-n7-node6:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9006:9000"
+    volumes:
+      - node6-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+volumes:
+  node0-data:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
+  node6-data:
+
+networks:
+  raftnet:
+    driver: bridge

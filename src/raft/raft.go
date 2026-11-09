@@ -77,9 +77,9 @@ type Raft struct {
 	mu        sync.Mutex // Lock to protect shared access to this peer's state
 	applyCond *sync.Cond
 	peers     []labrpc.RPCClient //  // FollowerRPC end points of all peers
-	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+	persister *Persister         // Object to hold this peer's persisted state
+	me        int                // this peer's index into peers[]
+	dead      int32              // set by Kill()
 	applyCh   chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
@@ -96,6 +96,7 @@ type Raft struct {
 
 	prevRole        ServerRole
 	currentRole     ServerRole // 0: Follower; 1: Candidate; 2: Leader
+	leaderID        int        // last known leader, -1 if unknown
 	electionResetTs time.Time
 
 	// Volatile state on leaders:
@@ -124,6 +125,34 @@ func (rf *Raft) GetState() (int, bool) {
 	defer rf.mu.Unlock()
 
 	return rf.currentTerm, rf.currentRole == Leader
+}
+
+// Status is a point-in-time view of a peer, for monitoring and experiments.
+type Status struct {
+	Term           int
+	IsLeader       bool
+	LeaderID       int
+	CommitIndex    int
+	LastLogIndex   int
+	LastApplied    int
+	RaftStateBytes int
+	SnapshotBytes  int
+}
+
+func (rf *Raft) Status() Status {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return Status{
+		Term:           rf.currentTerm,
+		IsLeader:       rf.currentRole == Leader,
+		LeaderID:       rf.leaderID,
+		CommitIndex:    rf.commitIndex,
+		LastLogIndex:   rf.lastLogIndex(),
+		LastApplied:    rf.lastApplied,
+		RaftStateBytes: rf.persister.RaftStateSize(),
+		SnapshotBytes:  rf.persister.SnapshotSize(),
+	}
 }
 
 func (rf *Raft) encodeState() []byte {
@@ -213,6 +242,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.leaderID = -1
 		rf.persist()
 		rf.updateRole(Follower)
 		debugLog.Printf("[%d::RequestVote()] Updated term to %d. Converted to follower.\n", rf.me, args.Term)
@@ -284,10 +314,12 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.leaderID = -1
 		rf.persist()
 		rf.updateRole(Follower)
 	}
 
+	rf.leaderID = args.LeaderId
 	rf.resetElectionTimer()
 
 	if rf.pendingSnapshot == nil || args.LastIncludedIndex > rf.pendingSnapshot.SnapshotIndex {
@@ -315,6 +347,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = -1
+		rf.leaderID = -1
 		rf.persist()
 
 		if rf.currentRole != Follower {
@@ -330,6 +363,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	rf.leaderID = args.LeaderId
 	rf.resetElectionTimer()
 
 	prevIndex := rf.toLogIdx(args.PrevLogIndex)
@@ -493,6 +527,7 @@ func (rf *Raft) runElection() {
 	rf.currentTerm++
 	electionTerm := rf.currentTerm
 	rf.votedFor = rf.me
+	rf.leaderID = -1
 	rf.persist()
 	rf.resetElectionTimer()
 	rf.mu.Unlock()
@@ -577,6 +612,7 @@ func (rf *Raft) runElection() {
 	rf.resetElectionTimer()
 	if hasMajorityGranted && rf.currentRole == Candidate && rf.currentTerm == electionTerm {
 		rf.updateRole(Leader)
+		rf.leaderID = rf.me
 		// Reinitialize leader state
 		for i := range rf.peers {
 			if i == rf.me {
@@ -610,6 +646,9 @@ func (rf *Raft) candidateBehavior() {
 		rf.runElection()
 	} else {
 		rf.mu.Unlock()
+		// Waiting for the election timeout; without this the state-machine
+		// goroutine spins and a losing candidate pegs a core.
+		time.Sleep(20 * time.Millisecond)
 	}
 
 }
@@ -634,6 +673,11 @@ func (rf *Raft) leaderBehavior() {
 	}
 
 	rf.mu.Unlock()
+
+	// Without this the state-machine goroutine spins, spawning replicateTo
+	// goroutines as fast as the scheduler allows. Under load that saturates the
+	// CPU, heartbeats slip past the election timeout and the cluster livelocks.
+	time.Sleep(HeartBeatTimeout / 3)
 }
 
 // Launches goroutines that perform the server operations
@@ -901,6 +945,7 @@ func Make(peers []labrpc.RPCClient, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.currentRole = Follower
 	rf.votedFor = -1
+	rf.leaderID = -1
 	rf.log = []LogEntry{{Term: 0}} // Initialize with a dummy log entry at index 0
 	rf.commitIndex = 0
 	rf.lastApplied = 0
