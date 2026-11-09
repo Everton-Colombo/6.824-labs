@@ -17,7 +17,7 @@ var autoClientID int64 = time.Now().UnixNano()
 //   - GET  /kv/{key}   -> JSON RequestResponse with the current value
 //   - PUT  /kv/{key}   -> sets the key to the request body
 //   - POST /kv/{key}   -> appends the request body to the key
-//   - GET  /status     -> JSON {"id": me, "term": term, "is_leader": bool}
+//   - GET  /status     -> JSON node/peer state (term, leader, log indexes, size)
 //
 // Followers reply 421 + {"Err":"ErrWrongLeader"}; the retry loop that moves to
 // the next server lives in the Clerk (client side).
@@ -25,12 +25,18 @@ func (kv *KVServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		term, isLeader := kv.rf.GetState()
+		st := kv.rf.Status()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":        kv.me,
-			"term":      term,
-			"is_leader": isLeader,
+			"id":               kv.me,
+			"term":             st.Term,
+			"is_leader":        st.IsLeader,
+			"leader_id":        st.LeaderID,
+			"commit_index":     st.CommitIndex,
+			"last_log_index":   st.LastLogIndex,
+			"last_applied":     st.LastApplied,
+			"raft_state_bytes": st.RaftStateBytes,
+			"snapshot_bytes":   st.SnapshotBytes,
 		})
 	})
 

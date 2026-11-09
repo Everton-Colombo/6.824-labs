@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -111,4 +112,51 @@ func TestHTTPAndTCPCluster(t *testing.T) {
 			t.Fatalf("follower %d served a write: status=%d body=%s", i, resp.StatusCode, body)
 		}
 	}
+
+	// /status must report the same leader on every node.
+	leaderID := -1
+	for i := 0; i < n; i++ {
+		st := fetchStatus(t, httpServers[i].URL)
+		if st.IsLeader {
+			leaderID = st.ID
+		}
+	}
+	if leaderID == -1 {
+		t.Fatal("no leader in /status")
+	}
+	for i := 0; i < n; i++ {
+		st := fetchStatus(t, httpServers[i].URL)
+		if st.LeaderID != leaderID {
+			t.Fatalf("node %d reports leader %d, want %d", i, st.LeaderID, leaderID)
+		}
+		if st.LastLogIndex < st.CommitIndex || st.CommitIndex < st.LastApplied {
+			t.Fatalf("node %d inconsistent indexes: %+v", i, st)
+		}
+	}
+}
+
+type statusJSON struct {
+	ID             int  `json:"id"`
+	Term           int  `json:"term"`
+	IsLeader       bool `json:"is_leader"`
+	LeaderID       int  `json:"leader_id"`
+	CommitIndex    int  `json:"commit_index"`
+	LastLogIndex   int  `json:"last_log_index"`
+	LastApplied    int  `json:"last_applied"`
+	RaftStateBytes int  `json:"raft_state_bytes"`
+	SnapshotBytes  int  `json:"snapshot_bytes"`
+}
+
+func fetchStatus(t *testing.T, baseURL string) statusJSON {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var st statusJSON
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
