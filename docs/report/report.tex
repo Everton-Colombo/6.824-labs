@@ -1,0 +1,303 @@
+% !TEX root = report.tex
+% ============================================================================
+% MC714 - Trabalho 2 - Report (IEEE, two columns, max. 6 pages + refs)
+%
+% Build:  latexmk -pdf -outdir=build report.tex
+% VS Code: LaTeX Workshop compiles on save (see .vscode/settings.json)
+%
+% Grading rubric -> sections:
+%   30% algorithm correctness + tests ..... Sec. 4, 5
+%   20% model, architecture, failures ..... Sec. 2, 3, 8
+%   25% experiments and reproducibility ... Sec. 6, 7
+%   15% report ............................ whole document
+%   10% video ............................. linked on the first page
+% ============================================================================
+\documentclass[conference]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+% TODO marker, visible in the PDF; remove before submission
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{[TODO:} #1\textbf{]}}}
+
+\begin{document}
+
+\title{Raft and KV-Raft: Consensus and State Machine Replication}
+
+\author{
+\IEEEauthorblockN{Everton Romanzini Colombo}
+\IEEEauthorblockA{\texttt{e257234@dac.unicamp.br}}
+\and
+\IEEEauthorblockN{Student 2}
+\IEEEauthorblockA{\texttt{student2@unicamp.br}}
+}
+
+\maketitle
+
+% % ---------------------------------------------------------------------------
+% % Required on the first page (assignment, Section 1)
+% % ---------------------------------------------------------------------------
+% \noindent
+% \textbf{RA:} 000000 (Student 1), 000000 (Student 2)\\
+% \textbf{Repository:} \url{https://gitlab.ic.unicamp.br/.../mc714-trabalho2}\\
+% \textbf{Video:} \url{https://...}
+
+% \vspace{0.5em}
+
+\begin{abstract}
+\todo{150--200 words: problem, algorithms (leader election and
+consensus/replication), containerized environment, metrics, and the main
+result (linearizable under faults; latency cost under loss/delay).}
+\end{abstract}
+
+% ===========================================================================
+\section{Introduction}
+% ===========================================================================
+\todo{Motivation: why consensus matters; why Raft (understandable) and
+replicated state machines.}
+\todo{Objectives: implement two complementary algorithms from the assignment
+(leader election [election theme] and consensus/replication [consensus theme])
+and evaluate them experimentally.}
+\todo{Contributions: (i) full Raft (2A--2C) with persistence and snapshots;
+(ii) linearizable KV with per-client deduplication; (iii) container packaging
+with TCP RPC and an HTTP API; (iv) test suite and reproducible experiments with
+linearizability checked by Porcupine.}
+\todo{Paper organization (one paragraph).}
+
+% ===========================================================================
+\section{System Model}
+% ===========================================================================
+\todo{State and justify each item below (explicit requirement in the
+assignment). Do not leave it as a bare list: justify the choices.}
+
+\subsection{Timing model}
+\todo{Partially synchronous: no known bound on delay in steady state, but
+timeouts (500--700\,ms election, 150\,ms heartbeat) eventually hold, which is
+what provides liveness. Justify why not purely asynchronous.}
+
+\subsection{Channels}
+\todo{Point-to-point channels over TCP (\texttt{net/rpc}), no ordering between
+concurrent requests, with loss/delay injected by \texttt{tc netem};
+duplication and reordering are handled by idempotence (per-client
+\texttt{ClientId,Seq} dedup) and idempotent RPCs. In the test environment,
+\texttt{labrpc} simulates loss, delay and partitions.}
+
+\subsection{Failures}
+\todo{Failure model: crash-stop and crash-recovery (state persisted on disk
+through \texttt{Persister}); network partitions; no Byzantine faults. Justify
+why persisted log plus snapshots suffice for recovery.}
+
+\subsection{Clocks, persistence and restart}
+\todo{No synchronized clocks; timeouts use the local clock only as a
+heuristic. Persistence: \texttt{currentTerm}, \texttt{votedFor}, log and
+\texttt{lastIncludedIndex} in \texttt{raft.state}; snapshot in \texttt{kv.snap}
+(atomic write via temporary file + rename).}
+
+\subsection{Correctness properties}
+\todo{Safety: at most one leader per term; Log Matching; if an entry is applied
+on one node it is applied at the same index on every node; KV linearizability.
+Liveness: after the network stabilizes and with a live majority, a leader is
+eventually elected and submitted commands are eventually committed.}
+
+% ===========================================================================
+\section{Architecture}
+% ===========================================================================
+\todo{Figure/diagram: HTTP client \(\rightarrow\) nodes (API :9000) and Raft
+mesh (:8000) between containers; persistent volumes.}
+\todo{Describe \texttt{compose.yaml}: 3+ nodes, bridge network, ports
+9000--9002 published, 8000 internal, one volume per node.}
+\todo{Communication: binary RPC (\texttt{net/rpc}/gob) between peers;
+HTTP/JSON API for clients; \texttt{Clerk} on the client with retry and leader
+switching. Explain why the client (not the server) finds the leader.}
+\todo{Observability: \texttt{/status} endpoint (term, leader, indexes, state
+and snapshot sizes) used by the experiments.}
+\todo{Versions: Go, Docker/Compose, base image --- fill in
+Table~\ref{tab:env}.}
+
+% ===========================================================================
+\section{Implemented Algorithms}
+% ===========================================================================
+\todo{Make explicit that these are the two complementary algorithms: leader
+election (theme 1) and consensus/replication (theme 2).}
+
+\subsection{Leader election and terms}
+\todo{Randomized timeouts, voting (log up-to-date rule, one vote per term),
+conversion to follower on a higher term; role of the observed
+\texttt{leaderId}.}
+
+\subsection{Log replication and consensus}
+\todo{\texttt{AppendEntries} with \texttt{PrevLogIndex/Term}, retry with
+\texttt{XTerm/XIndex/XLen}, \texttt{commitIndex} advanced only for entries from
+the current term (Figure 8 of the paper), snapshots and
+\texttt{InstallSnapshot}.}
+
+\subsection{Linearizable KV state machine}
+\todo{Every operation (reads included) goes through the log; response cache
+keyed by \texttt{(ClientId, Seq)} for exactly-once application; replies matched
+by log index; snapshot of the map plus the cache.}
+
+\subsection{Reused code and modifications}
+\todo{Mandatory citation: MIT 6.824 labs 2A--3B skeleton (\texttt{labrpc},
+\texttt{labgob}, \texttt{porcupine}, tests)~\cite{mit6824}; describe what was
+changed: the Raft/KV implementation, the \texttt{RPCClient} interface for real
+TCP, the on-disk \texttt{Persister}, the \texttt{/status} endpoint, the
+benchmark client and the experiment scripts.}
+
+% ===========================================================================
+\section{Correctness Properties and Tests}
+% ===========================================================================
+\subsection{Safety arguments}
+\todo{Sketch the proof: leader uniqueness per term; majority intersection;
+the election restriction guarantees the elected leader holds every committed
+entry; in-order application by index.}
+
+\subsection{Automated tests}
+\todo{Describe the inherited suite (2A/2B/2C, 3A/3B) and our own tests: real
+TCP cluster, follower rejecting writes (HTTP 421), \texttt{/status}
+consistency. Report that everything passes (total time).}
+\todo{Linearizability: Porcupine reconstructs a valid order for the history;
+46/46 runs \texttt{linearizable=ok} in the experimental scenarios.}
+
+% ===========================================================================
+\section{Experimental Methodology}
+% ===========================================================================
+\begin{table}[t]
+\centering
+\small
+\caption{Execution environment}
+\label{tab:env}
+\begin{tabular}{ll}
+\toprule
+Item & Value \\
+\midrule
+Hardware & \todo{CPU, cores, RAM} \\
+Operating system & \todo{distribution, kernel} \\
+Docker / Compose & \todo{versions} \\
+Go & \todo{version} \\
+Nodes & 3, 5, 7 containers (same host) \\
+Load & 8 clients, 50 ops/client \\
+Seeds & 5--10 per configuration \\
+Warm-up & 1 discarded run (sweep) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\todo{Describe the workload (50/50 read/write mix, 5 keys, \texttt{kvbench}),
+the per-run key namespace, and the fact that throughput is measured before the
+linearizability check.}
+\todo{Metrics: throughput (ops/s), latency p50/p95/p99, time-to-elect,
+service recovery time (TTR-service), replica recovery time (TTR-replica),
+attempts per operation and \texttt{ErrWrongLeader} rate. Justify each one.}
+\todo{Parameters varied at \(\geq 3\) levels: \(N \in \{3,5,7\}\); delay/loss
+via \texttt{tc netem} (0, 50\,ms, 100\,ms; 0\%, 2\%, 5\%); number of clients.}
+\todo{Fault scenarios: leader crash, leader partition, full cluster restart.}
+\todo{Reproducibility: \texttt{scripts/experiment.py} with recorded seeds,
+raw CSVs in \texttt{scripts/experiments/}, analysis in
+\texttt{scripts/analysis.ipynb}. Exact commands.}
+
+% ===========================================================================
+\section{Results}
+% ===========================================================================
+\todo{Replace the values below with the final version and generate the figures
+with \texttt{scripts/analysis.ipynb}.}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Throughput and latency (median over seeds)}
+\label{tab:res}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrr}
+\toprule
+Scenario & ops/s & p50 & p95 & p99 \\
+\midrule
+Normal            & 1633 & 4.5  & 7.4  & 8.8 \\
+\texttt{netem} 50\,ms/2\% & 41 & 155 & 307 & 418 \\
+Leader crash (2 nodes) & 2038 & 2.7 & 8.0 & 21.9 \\
+Partition (after heal) & 1227 & 2.6 & 6.4 & 184 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Recovery times (mean \(\pm\) std)}
+\label{tab:ttr}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrr}
+\toprule
+Scenario & election & TTR-service & TTR-replica \\
+\midrule
+Leader crash & \(507 \pm 114\)\,ms & \(1868 \pm 32\)\,ms & \(468 \pm 124\)\,ms \\
+Partition    & \(349 \pm 185\)\,ms & \(1632 \pm 404\)\,ms & not applicable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% Suggested figures (export from scripts/analysis.ipynb to figs/):
+% \begin{figure}[t]
+% \centering
+% \includegraphics[width=\columnwidth]{figs/throughput-vs-n.png}
+% \caption{Mean throughput with \(N \in \{3,5,7\}\) (bars: standard deviation).}
+% \label{fig:n}
+% \end{figure}
+%
+% \begin{figure}[t]
+% \centering
+% \includegraphics[width=\columnwidth]{figs/probe-latency.png}
+% \caption{Write latency during the leader crash; dashed line: fault instant.}
+% \label{fig:probe}
+% \end{figure}
+
+\subsection{Normal operation}
+\todo{Describe throughput and percentiles; explain that the 2\% retry in the
+baseline is one extra attempt per client to discover the leader (8/400), not
+steady-state retrying.}
+
+\subsection{Delay and loss}
+\todo{Discussion: throughput drop and p99 increase; why the ceiling is
+dominated by the election timeout and retransmissions; linearizability is
+preserved.}
+
+\subsection{Leader crash}
+\todo{Time-to-elect \(\approx\) election timeout; TTR-service dominated by the
+client HTTP timeout (\(\sim\)2\,s); TTR-replica measures recovery via
+log/snapshot.}
+
+\subsection{Partition and the disruptive-server problem}
+\todo{Inflated terms, churn, attempts per operation; explain that without
+PreVote the isolated node exiles itself; treat it as a limitation and future
+work.}
+
+\subsection{Scalability}
+\todo{Results with \(N=3,5,7\): throughput and latency; discuss why the leader
+serializes and where replication cost would show up (message counts).}
+
+% ===========================================================================
+\section{Limitations and Threats to Validity}
+% ===========================================================================
+\todo{Containers on one host are not independent failure domains; variability
+from short runs; no batching; no PreVote; no message/byte counters; Docker
+Desktop environment.}
+
+% ===========================================================================
+\section{Conclusion and Future Work}
+% ===========================================================================
+\todo{Recap: two algorithms, correctness under faults, performance cost.
+Future work: PreVote/check-quorum, batching, lease-based reads, incremental
+snapshots, message accounting, execution across multiple machines.}
+
+% ===========================================================================
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

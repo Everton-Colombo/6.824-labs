@@ -2,3 +2,6 @@ bin/
 data/
 *.log
 out.txt
+docs/report/build/*
+!docs/report/build/report.pdf
+.vscode/
