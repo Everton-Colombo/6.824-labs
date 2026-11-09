@@ -1,0 +1,71 @@
+name: mc714-n3
+
+services:
+  node0:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n3-node0
+    environment:
+      NODE_ID: "0"
+      PEERS: "kvraft-n3-node0:8000,kvraft-n3-node1:8000,kvraft-n3-node2:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9000:9000"
+    volumes:
+      - node0-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node1:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n3-node1
+    environment:
+      NODE_ID: "1"
+      PEERS: "kvraft-n3-node0:8000,kvraft-n3-node1:8000,kvraft-n3-node2:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9001:9000"
+    volumes:
+      - node1-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+  node2:
+    build:
+      context: /home/everton/Development/git_clones/6.824
+    container_name: kvraft-n3-node2
+    environment:
+      NODE_ID: "2"
+      PEERS: "kvraft-n3-node0:8000,kvraft-n3-node1:8000,kvraft-n3-node2:8000"
+      RAFT_ADDR: ":8000"
+      HTTP_ADDR: ":9000"
+      DATA_DIR: "/data"
+      MAX_RAFT_STATE: "4096"
+    ports:
+      - "9002:9000"
+    volumes:
+      - node2-data:/data
+    cap_add:
+      - NET_ADMIN
+    networks:
+      - raftnet
+
+volumes:
+  node0-data:
+  node1-data:
+  node2-data:
+
+networks:
+  raftnet:
+    driver: bridge
