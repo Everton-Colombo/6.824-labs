@@ -646,6 +646,9 @@ func (rf *Raft) candidateBehavior() {
 		rf.runElection()
 	} else {
 		rf.mu.Unlock()
+		// Waiting for the election timeout; without this the state-machine
+		// goroutine spins and a losing candidate pegs a core.
+		time.Sleep(20 * time.Millisecond)
 	}
 
 }
@@ -670,6 +673,11 @@ func (rf *Raft) leaderBehavior() {
 	}
 
 	rf.mu.Unlock()
+
+	// Without this the state-machine goroutine spins, spawning replicateTo
+	// goroutines as fast as the scheduler allows. Under load that saturates the
+	// CPU, heartbeats slip past the election timeout and the cluster livelocks.
+	time.Sleep(HeartBeatTimeout / 3)
 }
 
 // Launches goroutines that perform the server operations

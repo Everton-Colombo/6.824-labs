@@ -102,6 +102,25 @@ func (kv *KVServer) Handler() http.Handler {
 type HTTPEnd struct {
 	baseURL string
 	client  *http.Client
+
+	attempts    atomic.Int64
+	wrongLeader atomic.Int64
+	failed      atomic.Int64
+}
+
+// HTTPStats are the client-side RPC counters of one endpoint.
+type HTTPStats struct {
+	Attempts    int64
+	WrongLeader int64
+	Failed      int64
+}
+
+func (e *HTTPEnd) Stats() HTTPStats {
+	return HTTPStats{
+		Attempts:    e.attempts.Load(),
+		WrongLeader: e.wrongLeader.Load(),
+		Failed:      e.failed.Load(),
+	}
 }
 
 func MakeHTTPEnd(addr string, timeout time.Duration) *HTTPEnd {
@@ -118,8 +137,11 @@ func MakeHTTPEnd(addr string, timeout time.Duration) *HTTPEnd {
 }
 
 func (e *HTTPEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
+	e.attempts.Add(1)
+
 	out, ok := reply.(*RequestResponse)
 	if !ok {
+		e.failed.Add(1)
 		return false
 	}
 
@@ -155,12 +177,17 @@ func (e *HTTPEnd) Call(svcMeth string, args interface{}, reply interface{}) bool
 
 	resp, err := e.client.Do(req)
 	if err != nil {
+		e.failed.Add(1)
 		return false
 	}
 	defer resp.Body.Close()
 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		e.failed.Add(1)
 		return false
+	}
+	if out.Err == ErrWrongLeader {
+		e.wrongLeader.Add(1)
 	}
 	return true
 }
