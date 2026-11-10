@@ -93,7 +93,7 @@ We consider a fixed set of $N$ servers that talk to each other, plus any number 
 \label{sec:model-timing}
 Raft is partially synchronous. It does not know in advance any hard limit on message delay or on how long a node takes to execute a step, but timeouts and heartbeats managed by local timers are used to detect failures and guarantee progress.
 
-Safety does not depend on timing at all. The rules for electing a leader, matching logs and committing entries use only the contents of messages and the fact that majorities intersect, so no timeout can make two replicas disagree. Progress does depend on timing, and on the constants in Table~\ref{tab:config}: heartbeats every 150\,ms, election timeouts of 500--700\,ms, peer RPCs bounded at 800\,ms and client requests at 2\,s.
+Safety does not depend on timing at all. The rules for electing a leader, matching logs and committing entries use only the contents of messages and the fact that majorities intersect, so no timeout can make two replicas disagree. Progress does depend on timeout constants, namely: heartbeats every 150\,ms, election timeouts of 500--700\,ms, peer RPCs bounded at 800\,ms and client requests at 2\,s.
 
 \subsection{Channels}
 \label{sec:model-channels}
@@ -129,36 +129,33 @@ Every node runs the same Go binary (\texttt{cmd/kvnode}), with one container per
 \label{fig:arch}
 \end{figure}
 
-\begin{table}[h]
-\centering
-\small
-\setlength{\tabcolsep}{4pt}
-\caption{Per-node configuration}
-\label{tab:config}
-\begin{tabular}{lll}
-\toprule
-Setting & Value & Purpose \\
-\midrule
-Port \texttt{:8000} & internal & Raft RPCs \\
-Port \texttt{:9000} & published 9000--9002 & KV API \\
-Heartbeat & 150\,ms & leader liveness \\
-Election timeout & 500--700\,ms & randomized \\
-Peer RPC deadline & 800\,ms & per-call bound \\
-Client deadline & 2\,s & HTTP timeout \\
-Snapshot threshold & 4096\,B & \texttt{MAX\_RAFT\_STATE} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
 The nodes are configured through environment variables. \texttt{NODE\_ID} selects the node's own index into \texttt{PEERS}, which lists the Raft addresses of every peer in index order; \texttt{RAFT\_ADDR} and \texttt{HTTP\_ADDR} set the two listeners; \texttt{DATA\_DIR} points at the mounted volume; and \texttt{MAX\_RAFT\_STATE} sets the snapshot threshold. See the \texttt{compose.yaml} file on this project's repository for an example of how to set these variables for a cluster of three nodes.
 
 This configurability also allows for the same code to run unchanged between the test harness and the container setup: in the tests the nodes are wired over the simulated \texttt{labrpc} network, while in the deployment they are wired over real TCP, and the difference is entirely in how the peer endpoints are created. In the code, this is achieved by having Raft and the KV service depend only on a one-method interface for communication, \texttt{RPCClient}, which both \texttt{labrpc.ClientEnd} (the in-memory simulated network) and \texttt{labrpc.TCPEnd} (a \texttt{net/rpc} client over TCP with a dial and a call deadline) implement.  The test suite exercises exactly the same protocol code that runs in deployment, only over a network that can be told to drop, delay and reorder messages at will.
 
 Clients have their own communication channel, separate from the one used by Raft, via HTTP/JSON to the published ports, over the endpoints described in Table~\ref{tab:endpoints}. The \texttt{Clerk} in the client library remembers the node it last got an answer from and, on \texttt{ErrWrongLeader}, advances to the next server and retries.  Followers answer read and write requests with HTTP \texttt{421} and \texttt{ErrWrongLeader} rather than forwarding them, so leader discovery is entirely client-side.  Every request carries a \texttt{(ClientId, Seq)} pair so that retried requests are answered from a cache instead of being applied twice.
 
-Each node persists its durable state to a mounted volume. The raft side persists the current term, vote and log, and the kvserver side persists the key/value map and the response cache. For more details, see (Section~\ref{sec:model-persistence}). 
+The HTTP API also exposes a \texttt{/status} endpoint that reports the term, the observed leader, the commit, last-log and applied indexes, and the sizes of the Raft state and snapshot; the experiments in Section~\ref{sec:method} poll it to derive the recovery metrics.
 
-Finally, the HTTP API exposes a \texttt{/status} endpoint that reports the term, the observed leader, the commit, last-log and applied indexes, and the sizes of the Raft state and snapshot; the experiments in Section~\ref{sec:method} poll it to derive the recovery metrics.
+\begin{table}[h]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\caption{HTTP endpoints exposed by every node}
+\label{tab:endpoints}
+\begin{tabular}{@{}llp{40mm}@{}}
+\toprule
+Method & Path & Effect \\
+\midrule
+GET  & \texttt{/status}     & node state: term, leader, indexes, state and snapshot sizes \\
+GET  & \texttt{/kv/\{key\}} & read the value of a key \\
+PUT  & \texttt{/kv/\{key\}} & set the key to the request body \\
+POST & \texttt{/kv/\{key\}} & append the request body to the key \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Finally, each node persists its durable state to a mounted volume. The raft side persists the current term, vote and log, and the kvserver side persists the key/value map and the response cache. For more details, see (Section~\ref{sec:model-persistence}). 
 
 % ===========================================================================
 \section{Implemented Algorithms}
