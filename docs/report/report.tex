@@ -94,7 +94,7 @@ A common way to build a fault-tolerant service is the \emph{replicated state mac
 \label{fig:raft-rsm}
 \end{figure}
 
-\textbf{Roles and terms.} At any moment, each server is a \emph{follower}, a \emph{candidate} or the \emph{leader} (Figure~\ref{fig:raft-states}). In normal operation there is exactly one leader, and the other servers are followers that only answer its requests. Time is divided into \emph{terms}, numbered with consecutive integers; each term starts with an election and has at most one leader. Every message carries the sender's term, a server that sees a term higher than its own adopts it and becomes a follower, and messages from older terms are rejected. This is how a leader that was cut off finds out that it has been replaced. The basic protocol needs only two RPCs, \texttt{RequestVote} and \texttt{AppendEntries}. Optionally, a \texttt{InstallSnapshot} RPC is defined for log compaction.
+\paragraph{Roles and terms} At any moment, each server is a \emph{follower}, a \emph{candidate} or the \emph{leader} (Figure~\ref{fig:raft-states}). In normal operation there is exactly one leader, and the other servers are followers that only answer its requests. Time is divided into \emph{terms}, numbered with consecutive integers; each term starts with an election and has at most one leader. Every message carries the sender's term, a server that sees a term higher than its own adopts it and becomes a follower, and messages from older terms are rejected. This is how a leader that was cut off finds out that it has been replaced. The basic protocol needs only two RPCs, \texttt{RequestVote} and \texttt{AppendEntries}. Optionally, a \texttt{InstallSnapshot} RPC is defined for log compaction.
 
 \begin{figure}[t]
 \centering
@@ -103,13 +103,13 @@ A common way to build a fault-tolerant service is the \emph{replicated state mac
 \label{fig:raft-states}
 \end{figure}
 
-\textbf{Leader election.} The leader sends periodic heartbeats (\texttt{AppendEntries} calls, possibly empty) to every follower. A follower that hears nothing for an \emph{election timeout} assumes the leader has failed: it increments its term, becomes a candidate, votes for itself and asks the other servers for their votes. Each server gives at most one vote per term, to the first candidate that asks, and only if that candidate's log is at least as up to date as its own. A candidate that gets votes from a majority becomes the leader and starts sending heartbeats. If the votes are split and nobody wins, the candidates time out and try again in a new term. Election timeouts are chosen at random, so this shouldn't happen many times in a row.
+\paragraph{Leader election} The leader sends periodic heartbeats (\texttt{AppendEntries} calls, possibly empty) to every follower. A follower that hears nothing for an \emph{election timeout} assumes the leader has failed: it increments its term, becomes a candidate, votes for itself and asks the other servers for their votes. Each server gives at most one vote per term, to the first candidate that asks, and only if that candidate's log is at least as up to date as its own. A candidate that gets votes from a majority becomes the leader and starts sending heartbeats. If the votes are split and nobody wins, the candidates time out and try again in a new term. Election timeouts are chosen at random, so this shouldn't happen many times in a row.
 
-\textbf{Log replication.} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
+\paragraph{Log replication} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
 
-\textbf{Safety.} Two extra rules keep committed entries from being lost when the leader changes. The voting rule above means that only a candidate that holds every committed entry can win an election. And a leader only declares an entry committed by counting replicas if the entry is from its own term; entries from older terms are committed indirectly, together with a newer one. Figure~8 of the Raft paper shows how a committed entry could be overwritten without this second rule. Section~\ref{sec:correct-safety} explains why these rules are enough.
+\paragraph{Safety} Two extra rules keep committed entries from being lost when the leader changes. The voting rule above means that only a candidate that holds every committed entry can win an election. And a leader only declares an entry committed by counting replicas if the entry is from its own term; entries from older terms are committed indirectly, together with a newer one. Figure~8 of the Raft paper shows how a committed entry could be overwritten without this second rule. Section~\ref{sec:correct-safety} explains why these rules are enough.
 
-\textbf{Persistence and snapshots.} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
+\paragraph{Persistence and snapshots} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
 
 % \textbf{Clients.} Raft by itself only provides an agreed-upon log. To build a linearizable service on top of it, clients also need a way to find the leader and to retry when a request gets no answer, and servers must recognize retried requests so that they are not applied twice. Section~\ref{sec:algs-kv} describes how our key/value service does this.
 
@@ -217,18 +217,73 @@ changed: the Raft/KV implementation, the \texttt{RPCClient} interface for real T
 \section{Correctness Properties and Tests}
 \label{sec:correct}
 % ===========================================================================
+The Raft paper~\cite{raft2014} already proves that the protocol is safe, so we did not try to prove anything new. What we had to make sure of was that our code really follows the rules that proof depends on, and then test that it does. This section goes through the safety properties of Section~\ref{sec:model-properties}, shows where each one comes from in the implementation, and then describes the tests we used to check them.
+
 \subsection{Safety arguments}
-\todo{Sketch the proof: leader uniqueness per term; majority intersection; the election restriction guarantees the elected leader holds every committed entry; in-order application by index.}
+\label{sec:correct-safety}
+
+\paragraph{One leader per term} A node grants at most one vote per term, and it saves \texttt{votedFor} and \texttt{currentTerm} before replying, so not even a crash makes it forget a vote. A candidate needs votes from more than $N/2$ nodes, its own included. Two leaders in the same term would need two such majorities, and any two majorities of the same $N$ nodes share at least one node, which would have had to vote twice.
+
+\paragraph{Log Matching} A leader only appends to its own log, so it creates at most one entry per index in its term. Each \texttt{AppendEntries} RPC carries the index and term of the entry right before the new ones, and the follower refuses it unless it has that exact entry. Every accepted request therefore extends a prefix that the follower already shares with the leader, and by induction, if two logs have an entry with the same index and term, they agree on everything before it.
+
+\paragraph{Committed entries are never lost} The main idea that supports this is the election restriction, which states that a node only votes for a candidate whose log is at least as up to date as its own, meaning its last entry has a higher term, or the same term and an index at least as high. A committed entry is stored on a majority and the new leader was voted in by a majority, so at least one of a leader's voters has the entry and would have refused a candidate without it. The paper turns this intuition into an induction over terms.
+
+\paragraph{Same commands in the same order} \texttt{commitIndex} never decreases, and a single goroutine per node delivers entries to the service strictly in index order. Together with the two properties above, this means every replica applies the same command at each index, so all KV replicas go through the same sequence of states. 
+
+\paragraph{Linearizability} Every client operation, \texttt{Get} included, is turned into a log entry, and the server only replies after that entry is applied. The moment of application falls between the request and the reply, which is exactly the instant linearizability asks for. It also means that an old leader that was cut off cannot serve stale reads: it cannot commit anything, so its reads never return. The tricky part is retries. If a reply is lost, the \texttt{Clerk} sends the request again, possibly to another server, and the same command can end up in the log twice. Each server stores, for every client, the \texttt{Seq} and result of the last operation it applied, and a request whose \texttt{Seq} is not newer than that gets the stored result instead of being applied a second time. Since a \texttt{Clerk} has only one request in flight at a time, remembering the last one is enough. This table is saved in the snapshot, so it survives restarts and snapshot installs.
+
+\paragraph{Liveness} Unlike safety, liveness depends on timing. Randomized election timeouts make repeated split votes unlikely, and once a leader can reach a majority, its heartbeats keep the followers from starting new elections while it retries \texttt{AppendEntries} until every entry is replicated.
 
 \subsection{Automated tests}
-\todo{Describe the inherited suite (2A/2B/2C, 3A/3B) and our own tests: real TCP cluster, follower rejecting writes (HTTP 421), \texttt{/status} consistency. Report that everything passes (total time).}
-\todo{Linearizability: Porcupine reconstructs a valid order for the history; 46/46 runs \texttt{linearizable=ok} in the experimental scenarios.}
+\label{sec:correct-tests}
+
+The 6.824 labs' tests run every peer inside a single Go process, connected through \texttt{labrpc}, which gives the tester full control of the network. It can disconnect a node, split the cluster into two partitions, or crash a node and later restart it from a copy of what it had persisted. It can also make the network unreliable with artificial delays and packet loss.
+
+What makes the Raft tests (2A--2C) strong is that safety is checked all the time, not only at the end. The tester records every entry that each peer applies, and fails immediately if two peers apply different commands at the same index, or if a peer applies an index before the previous one. Every time it looks for the leader, it also fails if it sees two leaders in the same term. So every Raft test, whatever it focuses on, is also checking that all replicas apply the same commands and that there is only one leader per term. The KV tests (3A--3B) look at the system from the outside instead, checking the values that clients get back. Every test also has a 120\,s limit, so an implementation that stays safe but takes too long to recover also fails. Table~\ref{tab:tests} lists the tests by part and how long they took to execute; a description of each is given below.
+
+\begin{table}[h]
+\centering
+\small
+\caption{Automated tests and their running time}
+\label{tab:tests}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llrr@{}}
+\toprule
+Part & Focus & Tests & Time (s) \\
+\midrule
+2A & leader election & 2 & 10.1 \\
+2B & log replication & 8 & 62.2 \\
+2C & persistence, Figure 8, churn & 8 & 129.3 \\
+3A & KV service, linearizability & 13 & 249.3 \\
+3B & snapshots & 8 & 152.5 \\
+Ours & real TCP, HTTP and disk & 1 & 0.7 \\
+\midrule
+Total & & 40 & 604.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{2A -- leader election} \texttt{InitialElection} checks that three nodes elect exactly one leader and agree on its term, and that the leader is still there two seconds later. \texttt{ReElection} disconnects the leader and expects a new one to be elected. The old leader coming back must not disturb the new one, with two of the three nodes disconnected no leader may be elected, and once a majority is back, one must be.
+
+\paragraph{2B -- log replication} Here commands are submitted with \texttt{Start} and must be committed at the expected index by the expected number of nodes. \texttt{FailAgree} keeps committing with one follower disconnected and checks that it catches up when it comes back, while \texttt{FailNoAgree} checks that nothing commits when three of five followers are gone. In \texttt{Rejoin}, a disconnected leader accepts entries that can never commit, and when it reconnects it must drop them in favor of the new leader's log. \texttt{Backup} pushes this further: two minority partitions each pile up 50 uncommitted entries, and then nodes are reconnected in other combinations, so the leader has to overwrite long conflicting suffixes on its followers. \texttt{ConcurrentStarts} calls \texttt{Start} from several goroutines at once. Finally, \texttt{RPCBytes} and \texttt{Count} test for excessive communication, making sure that each command should be sent about once to each follower, an election may take at most 30 RPCs, and one idle second at most 60 RPCs.
+
+\paragraph{2C -- persistence} The three \texttt{Persist} tests crash and restart nodes in different orders (all of them, only the leader, a follower while the others keep committing, a partitioned leader together with a follower), and a restarted node must come back with its term, vote and log. \texttt{Figure8} recreates the scenario behind the current-term commit rule: for 1000 iterations it gives a command to the leader and crashes it shortly after, usually before the entry commits, and restarts nodes whenever fewer than three are up. \texttt{Figure8Unreliable} does the same with disconnections instead of crashes, on an unreliable network, and turns on long reordering after 200 iterations. \texttt{UnreliableAgree} commits commands concurrently over the lossy network. The two \texttt{Churn} tests have three clients submitting commands while nodes are randomly disconnected, crashed and restarted every 700\,ms; at the end, every value that a client saw committed must be in the final log of every node.
+
+\paragraph{3A -- KV service} Most of these tests share the same routine, with five servers and three rounds of five seconds, in which each client appends to and reads its own key. Since each client is the only writer of its key, it knows what every \texttt{Get} must return, and any other value fails the test. After each round, every key is read back and each append must appear exactly once and in order, so both a lost write and a duplicate caused by a retry are caught. Options add more clients (five instead of one), an unreliable network, a partitioner that splits the servers into two random groups about once per second, and a restart of every server at the end of each round. \texttt{UnreliableOneKey} has five clients appending to the same key over the lossy network. \texttt{OnePartition} puts the leader on the minority side of a partition. The majority must keep serving requests, a \texttt{Put} and a \texttt{Get} sent to the minority must not complete, and the \texttt{Put} must go through once the partition heals. The \texttt{Get} on the minority side is the one that would catch an old leader serving stale reads.
+
+\paragraph{3B -- snapshots} These tests set \texttt{maxraftstate} to 1000 bytes and, after each round, require the persisted Raft state to be at most eight times that, which means the log is really being trimmed. In \texttt{SnapshotRPC}, one server falls behind in a minority while the other two commit 50 writes and compact their logs. The partition then changes so that the lagging server is needed for a majority, and the only way it can catch up is through \texttt{InstallSnapshot}, since the leader has already thrown away the entries it is missing. \texttt{SnapshotSize} requires snapshots smaller than 500 bytes after 800 operations on a single key. The other six tests repeat the 3A combinations of faults, with up to 20 clients, with snapshots turned on.
+
+\paragraph{3A + 3B -- linearizability} There are two \emph{Linearizable} tests, one in 3A and one in 3B. Fifteen clients send random \texttt{Put}, \texttt{Append} and \texttt{Get} requests on shared keys to seven servers, with lossy network, partitions and restarts all active, and the start and end time of every operation is recorded. Porcupine~\cite{porcupine} then searches for a single order of all the operations that respects real time (if one operation returned before another started, it must come first) and that explains every value returned by a \texttt{Get}. If no such order exists, the history is not linearizable and the test fails.
+
+\paragraph{Our own test.} All inherited tests use \texttt{labrpc} and the in-memory persister, so none of them runs the code that is used in the containers. To cover it, we wrote \texttt{TestHTTPAndTCPCluster}, which starts three nodes wired the same way as in the deployment: Raft over \texttt{net/rpc} on real TCP sockets, state saved to files on disk, and clients talking HTTP. It runs a \texttt{Put}, an \texttt{Append} and a \texttt{Get} through the \texttt{Clerk} and then checks three things: followers answer a write with HTTP 421 instead of applying it, \texttt{/status} reports the same leader on every node, and every node has $\textit{lastApplied} \le \textit{commitIndex} \le \textit{lastLogIndex}$. This is only a smoke test without faults; the experiments of Section~\ref{sec:method} are what exercise the deployment under faults.
+
+\textbf{Results:} All 40 tests pass.
 
 % ===========================================================================
 \section{Experimental Methodology}
 \label{sec:method}
 % ===========================================================================
-\begin{table}[t]
+\begin{table}[h]
 \centering
 \small
 \caption{Execution environment}
