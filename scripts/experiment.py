@@ -150,27 +150,36 @@ class Experiment:
 
     def start_timeline(self, path: Path) -> tuple[threading.Event, threading.Thread]:
         stop = threading.Event()
+        lock = threading.Lock()
 
         def loop():
             with path.open("w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(TIMELINE_COLS)
-                while not stop.is_set():
-                    t = now_ms()
-                    for i, port in enumerate(self.c.ports):
+
+                # one thread per node, so an unreachable node only delays its own samples
+                def poll_node(i: int, port: int) -> None:
+                    while not stop.is_set():
                         st = self.c.status(port)
-                        if not st:
-                            continue
-                        w.writerow([
-                            t, i, st.get("term"),
-                            str(bool(st.get("is_leader"))).lower(),
-                            st.get("leader_id"),
-                            st.get("commit_index"), st.get("last_log_index"),
-                            st.get("last_applied"), st.get("raft_state_bytes"),
-                            st.get("snapshot_bytes"),
-                        ])
-                    f.flush()
-                    stop.wait(self.args.poll)
+                        if st:
+                            with lock:
+                                w.writerow([
+                                    now_ms(), i, st.get("term"),
+                                    str(bool(st.get("is_leader"))).lower(),
+                                    st.get("leader_id"),
+                                    st.get("commit_index"), st.get("last_log_index"),
+                                    st.get("last_applied"), st.get("raft_state_bytes"),
+                                    st.get("snapshot_bytes"),
+                                ])
+                                f.flush()
+                        stop.wait(self.args.poll)
+
+                pollers = [threading.Thread(target=poll_node, args=(i, port), daemon=True)
+                           for i, port in enumerate(self.c.ports)]
+                for p in pollers:
+                    p.start()
+                for p in pollers:
+                    p.join()
 
         thread = threading.Thread(target=loop, daemon=True)
         thread.start()
