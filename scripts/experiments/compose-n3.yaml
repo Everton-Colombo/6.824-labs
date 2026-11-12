@@ -3,7 +3,7 @@ name: mc714-n3
 services:
   node0:
     build:
-      context: /home/everton/Development/git_clones/6.824
+      context: ../..
     container_name: kvraft-n3-node0
     environment:
       NODE_ID: "0"
@@ -23,7 +23,7 @@ services:
 
   node1:
     build:
-      context: /home/everton/Development/git_clones/6.824
+      context: ../..
     container_name: kvraft-n3-node1
     environment:
       NODE_ID: "1"
@@ -43,7 +43,7 @@ services:
 
   node2:
     build:
-      context: /home/everton/Development/git_clones/6.824
+      context: ../..
     container_name: kvraft-n3-node2
     environment:
       NODE_ID: "2"

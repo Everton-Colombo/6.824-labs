@@ -16,7 +16,9 @@ scripts/experiment.py sweep        --sizes 3 5 7 --seeds 10
 Common options: `--clients`, `--ops` (per client), `--poll` (status sampling
 period, default 50 ms), `--out` (default `scripts/experiments`), `--probe-ops`,
 `--probe-interval`, `--bench-timeout` (a run that cannot reach quorum is aborted
-instead of hanging), `--network`. Only the Python standard library is used.
+instead of hanging), `--network`, `--n` (bring up and tear down an N-node
+cluster, like sweep; default: the `compose.yaml` cluster). Only the Python
+standard library is used.
 
 What each scenario does:
 
@@ -42,7 +44,7 @@ What each scenario does:
 | `timeline-<seed>.csv` | `/status` of every node every `--poll` seconds (baseline uses `timeline.csv`): term, leader, commit/last-log/last-applied, `raft.state` and snapshot bytes |
 | `probe-<seed>.csv` | probe writes: `start_ns,end_ns,lat_ms` (kill/partition only) |
 | `summary.csv` | derived metrics; one row per seed for kill/partition, aggregates for baseline |
-| `compose-n<N>.yaml` | generated compose file (sweep only) |
+| `compose-n<N>.yaml` | generated compose file (sweep and `--n`) |
 
 `runs.csv` columns:
 

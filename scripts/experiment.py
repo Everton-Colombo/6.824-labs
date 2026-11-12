@@ -31,6 +31,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -439,14 +440,15 @@ class Experiment:
         return -1
 
 
-def compose_yaml(n: int) -> str:
+def compose_yaml(n: int, compose_path: Path) -> str:
+    context = Path(os.path.relpath(ROOT, compose_path.parent)).as_posix()
     peers = ",".join(f"kvraft-n{n}-node{i}:8000" for i in range(n))
     out = [f"name: mc714-n{n}", "", "services:"]
     for i in range(n):
         out += [
             f"  node{i}:",
             "    build:",
-            f"      context: {ROOT}",
+            f"      context: {context}",
             f"    container_name: kvraft-n{n}-node{i}",
             "    environment:",
             f'      NODE_ID: "{i}"',
@@ -471,24 +473,31 @@ def compose_yaml(n: int) -> str:
     return "\n".join(out)
 
 
+@contextmanager
+def generated_cluster(args, n: int):
+    """Generate compose-n<N>.yaml, bring the cluster up, and tear it down on exit."""
+    compose_path = ROOT / args.out / f"compose-n{n}.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text(compose_yaml(n, compose_path))
+    c = Cluster(ports=[9000 + i for i in range(n)],
+                nodes=[f"kvraft-n{n}-node{i}" for i in range(n)],
+                compose_file=compose_path)
+    c.compose("up", "-d", "--build")
+    try:
+        if not c.wait_stable(timeout=30):
+            sys.exit(f"cluster did not converge for N={n}")
+        yield c
+    finally:
+        c.compose("down", "-v", check=False)
+
+
 def run_sweep(args) -> None:
     for n in args.sizes:
         print(f"== N={n}")
-        compose_path = ROOT / args.out / f"compose-n{n}.yaml"
-        compose_path.parent.mkdir(parents=True, exist_ok=True)
-        compose_path.write_text(compose_yaml(n))
-        c = Cluster(ports=[9000 + i for i in range(n)],
-                    nodes=[f"kvraft-n{n}-node{i}" for i in range(n)],
-                    compose_file=compose_path)
-        exp = Experiment(args, c, f"sweep-n{n}")
-        c.compose("up", "-d", "--build")
-        try:
-            if not c.wait_stable(timeout=30):
-                sys.exit(f"cluster did not converge for N={n}")
+        with generated_cluster(args, n) as c:
+            exp = Experiment(args, c, f"sweep-n{n}")
             exp.bench("warmup", c.peers, 0, record=False)  # discard cold-start run
             exp.seeds(f"n{n}", c.peers)
-        finally:
-            c.compose("down", "-v", check=False)
 
 
 def main() -> None:
@@ -500,7 +509,7 @@ def main() -> None:
     p.add_argument("--ops", type=int, default=40)
     p.add_argument("--poll", type=float, default=0.05, help="status poll interval (s)")
     p.add_argument("--out", default="scripts/experiments")
-    p.add_argument("--n", type=int, default=3, help="cluster size for non-sweep runs")
+    p.add_argument("--n", type=int, help="bring up an N-node cluster (default: use compose.yaml)")
     p.add_argument("--compose-file", default="compose.yaml")
     p.add_argument("--network", default="mc714_raftnet")
     p.add_argument("--delay", default="50ms")
@@ -516,15 +525,24 @@ def main() -> None:
         run_sweep(args)
         return
 
-    c = Cluster(ports=[9000 + i for i in range(args.n)],
-                nodes=[f"kvraft-node{i}" for i in range(args.n)],
+    if args.n is not None:
+        args.network = f"mc714-n{args.n}_raftnet"
+        with generated_cluster(args, args.n) as c:
+            run_scenario(args, c, f"{args.scenario}-n{args.n}")
+        return
+
+    c = Cluster(ports=[9000 + i for i in range(3)],
+                nodes=[f"kvraft-node{i}" for i in range(3)],
                 compose_file=args.compose_file)
     if c.wait_leader(timeout=5) is None:
         sys.exit("cluster not reachable (docker compose up -d)")
     if not c.wait_stable():
         sys.exit("cluster did not converge (all nodes, same term/leader)")
+    run_scenario(args, c, args.scenario)
 
-    exp = Experiment(args, c, args.scenario)
+
+def run_scenario(args, c: Cluster, name: str) -> None:
+    exp = Experiment(args, c, name)
     if args.scenario == "baseline":
         exp.baseline()
     elif args.scenario == "netem":
