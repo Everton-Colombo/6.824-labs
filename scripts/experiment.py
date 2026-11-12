@@ -391,9 +391,16 @@ class Experiment:
         """ms until the restarted node has applied everything the leader committed."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            leader = self.c.leader()
-            if leader:
-                commit = (self.c.status(leader) or {}).get("commit_index")
+            # the returning node may still claim leadership at its old term
+            leaders = []
+            for p in self.c.ports:
+                if p == node_port:
+                    continue
+                st = self.c.status(p)
+                if st and st.get("is_leader"):
+                    leaders.append(st)
+            if leaders:
+                commit = max(leaders, key=lambda st: st["term"]).get("commit_index")
                 applied = (self.c.status(node_port) or {}).get("last_applied")
                 if commit is not None and applied is not None and applied >= commit:
                     return now_ms() - restart_ms
