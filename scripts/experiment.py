@@ -110,6 +110,11 @@ class Cluster:
         return subprocess.run(cmd, cwd=ROOT, check=check,
                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
+    def network_aliases(self, node: str, network: str) -> list[str]:
+        out = subprocess.run(["docker", "inspect", node],
+                             check=True, capture_output=True, text=True).stdout
+        return json.loads(out)[0]["NetworkSettings"]["Networks"][network]["Aliases"] or []
+
 
 def node_index(port: int) -> int:
     return port - 9000
@@ -310,6 +315,9 @@ class Experiment:
             sys.exit("no leader")
         idx = node_index(leader)
         pre_term = (self.c.status(leader) or {}).get("term", -1)
+        # network connect drops compose's aliases (e.g. node1), so restore them on heal
+        aliases = (self.c.network_aliases(self.c.nodes[idx], self.args.network)
+                   if kind == "partition" else [])
 
         probe_path = self.dir / f"probe-{seed}.csv"
         timeline = self.dir / f"timeline-{seed}.csv"
@@ -353,7 +361,8 @@ class Experiment:
             subprocess.run(["docker", "start", self.c.nodes[idx]], check=True,
                            stdout=subprocess.DEVNULL)
         else:
-            subprocess.run(["docker", "network", "connect", self.args.network,
+            alias_args = [arg for alias in aliases for arg in ("--alias", alias)]
+            subprocess.run(["docker", "network", "connect", *alias_args, self.args.network,
                             self.c.nodes[idx]], check=True, stdout=subprocess.DEVNULL)
         restart_ms = now_ms()
         deadline = time.monotonic() + 20
