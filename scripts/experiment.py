@@ -312,7 +312,8 @@ class Experiment:
         else:
             subprocess.run(["docker", "network", "disconnect", self.args.network,
                             self.c.nodes[idx]], check=True, stdout=subprocess.DEVNULL)
-        fault_cmd_ms = now_ms() - fault_ms
+        fault_done_ms = now_ms()
+        fault_cmd_ms = fault_done_ms - fault_ms
 
         if self.c.wait_leader() is None:
             print("  warning: no leader within 20s", file=sys.stderr)
@@ -320,7 +321,7 @@ class Experiment:
 
         # the probe's in-flight write only completes once the cluster serves
         # again; give it time to log that completion before killing it
-        self.wait_probe_recovery(probe_path, fault_ms, timeout=15)
+        self.wait_probe_recovery(probe_path, fault_done_ms, timeout=15)
         os.killpg(os.getpgid(probe.pid), signal.SIGTERM)
         try:
             probe.wait(timeout=5)
@@ -328,7 +329,7 @@ class Experiment:
             os.killpg(os.getpgid(probe.pid), signal.SIGKILL)
             probe.wait(timeout=5)
 
-        t_service = self.time_to_service(probe_path, fault_ms)
+        t_service = self.time_to_service(probe_path, fault_ms, fault_done_ms)
 
         if kind == "kill":
             subprocess.run(["docker", "start", self.c.nodes[idx]], check=True,
@@ -381,19 +382,22 @@ class Experiment:
             time.sleep(0.05)
         return False
 
-    def time_to_service(self, probe_path: Path, fault_ms: int) -> int | None:
+    def time_to_service(self, probe_path: Path, fault_ms: int, fault_done_ms: int) -> int | None:
         """When the probe next completed a write after the fault.
 
         The probe is sequential, so the first completion after the fault is the
         moment the cluster was serving writes again (the op in flight at fault
-        time is the one that spans the outage).
+        time is the one that spans the outage). Completions are taken after
+        fault_done_ms: writes that end while the fault command runs were served
+        before the fault took effect.
         """
         fault_ns = fault_ms * 1_000_000
+        done_ns = fault_done_ms * 1_000_000
         first_end = None
         with probe_path.open(newline="") as f:
             for row in csv.DictReader(f):
                 end = int(row["end_ns"])
-                if end > fault_ns and (first_end is None or end < first_end):
+                if end > done_ns and (first_end is None or end < first_end):
                     first_end = end
         return (first_end - fault_ns) // 1_000_000 if first_end else None
 

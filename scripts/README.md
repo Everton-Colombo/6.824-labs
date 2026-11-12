@@ -71,7 +71,8 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
   `last_applied` against the leader's `commit_index` (not `last_log_index`),
   because the leader usually has an uncommitted tail.
 * **fault_cmd** (ms) — how long `docker stop` / `docker network disconnect`
-  took to return.
+  took to return. TTR-service only counts probe writes that end after that,
+  since writes ending while the command runs were served before the fault.
 * **heal_unix** (ms) — when `docker start` / `docker network connect`
   returned; the TTR-replica interval starts at this instant.
 * **leader churn** — number of leader changes and `max(term) - min(term)` over
