@@ -56,6 +56,9 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
 
 ## Derived metrics
 
+* **fault_unix** (ms) — the fault timestamp, taken right before `docker stop` /
+  `docker network disconnect`, since the fault is already in effect while the
+  command runs.
 * **time-to-elect** (ms) — fault timestamp → first `/status` sample where some
   node reports `is_leader` at a term greater than the pre-fault term.
 * **TTR-service** (ms) — fault timestamp → first probe write that completes.
@@ -67,6 +70,8 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
   returning node's `last_applied >= leader.commit_index`. Compares
   `last_applied` against the leader's `commit_index` (not `last_log_index`),
   because the leader usually has an uncommitted tail.
+* **fault_cmd** (ms) — how long `docker stop` / `docker network disconnect`
+  took to return.
 * **leader churn** — number of leader changes and `max(term) - min(term)` over
   the baseline run, plus changes/minute.
 * **retry cost** — from `runs.csv`: `retry_pct`, `attempts_per_op`,

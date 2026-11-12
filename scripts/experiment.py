@@ -253,7 +253,8 @@ class Experiment:
         with (self.dir / "summary.csv").open("w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["seed", "fault_unix_ms", "time_to_elect_ms", "ttr_service_ms",
-                        "ttr_replica_ms", "pre_term", "new_term", "converged"])
+                        "ttr_replica_ms", "pre_term", "new_term", "converged",
+                        "fault_cmd_ms"])
             w.writerows(rows)
         print("  " + ",".join(["seed", "t_elect", "ttr_service", "ttr_replica", "converged"]))
         for r in rows:
@@ -294,13 +295,15 @@ class Experiment:
         stop, thread = self.start_timeline(timeline)
         time.sleep(1.0)
 
+        # before the command: the fault takes effect while it runs
+        fault_ms = now_ms()
         if kind == "kill":
             subprocess.run(["docker", "stop", self.c.nodes[idx]], check=True,
                            stdout=subprocess.DEVNULL)
         else:
             subprocess.run(["docker", "network", "disconnect", self.args.network,
                             self.c.nodes[idx]], check=True, stdout=subprocess.DEVNULL)
-        fault_ms = now_ms()
+        fault_cmd_ms = now_ms() - fault_ms
 
         if self.c.wait_leader() is None:
             print("  warning: no leader within 20s", file=sys.stderr)
@@ -351,7 +354,7 @@ class Experiment:
                 t_elect if t_elect is not None else "na",
                 t_service if t_service is not None else "na",
                 t_replica, pre_term, new_term,
-                str(converged).lower()]
+                str(converged).lower(), fault_cmd_ms]
 
     def wait_probe_recovery(self, probe_path: Path, fault_ms: int, timeout: float) -> bool:
         """Wait until the probe logged a write that finished after the fault."""
