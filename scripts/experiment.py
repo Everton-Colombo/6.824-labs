@@ -248,10 +248,27 @@ class Experiment:
                                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         tc("qdisc", "add", "dev", "eth0", "root", "netem", "delay", delay, "loss", loss)
+        rows = []
         try:
-            self.seeds(f"netem-{delay}-{loss}", self.c.peers)
+            for seed in range(1, self.args.seeds + 1):
+                timeline = self.dir / f"timeline-{seed}.csv"
+                stop, thread = self.start_timeline(timeline)
+                try:
+                    self.bench(f"netem-{delay}-{loss}", self.c.peers, seed)
+                finally:
+                    stop.set()
+                    thread.join()
+                changes = self.leader_changes(timeline)
+                minutes = self.duration_minutes(timeline)
+                per_min = changes / minutes if minutes else 0.0
+                rows.append([seed, changes, f"{per_min:.2f}", self.term_growth(timeline)])
+                print(f"  seed={seed}: leader changes: {changes}, term growth: {rows[-1][3]}")
         finally:
             tc("qdisc", "del", "dev", "eth0", "root")
+            with (self.dir / "summary.csv").open("w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["seed", "leader_changes", "leader_changes_per_min", "term_growth"])
+                w.writerows(rows)
 
     def leader_fault(self, kind: str) -> None:
         if self.args.probe_ops <= 0:

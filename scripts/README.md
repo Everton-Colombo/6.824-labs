@@ -23,7 +23,8 @@ What each scenario does:
 * **baseline** — no fault. Measures throughput/latency and counts leader changes
   and term growth over the run.
 * **netem** — `tc netem delay/loss` on every node's `eth0` (egress), then the
-  same workload; the qdisc is always removed on exit.
+  same workload; the qdisc is always removed on exit. Each seed also records a
+  timeline and a `summary.csv` row with its leader churn.
 * **kill-leader** — stops the leader container, benchmarks the surviving
   majority, restarts it and measures replica catch-up.
 * **partition** — `docker network disconnect` on the leader, same measurements,
