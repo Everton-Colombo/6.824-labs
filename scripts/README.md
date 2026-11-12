@@ -122,6 +122,15 @@ go run ./cmd/kvbench -probe -probe-log /tmp/probe.csv \
 It needs `pandas` and `matplotlib` (`pip install pandas matplotlib`), plus
 Jupyter to run the notebook.
 
+## Safety check on the timelines
+
+```bash
+scripts/verify_timelines.py                                # scripts/experiments
+scripts/verify_timelines.py scripts/exp-a scripts/exp-b    # other --out directories
+```
+
+Checks every `timeline*.csv` for election safety (at most one node reports `is_leader` per term) and that a node's term never decreases, even across restarts. Prints one line per file and exits non-zero on a violation.
+
 ## Known limitation seen by `partition`
 
 A node that stays isolated keeps calling elections, so its term grows without
