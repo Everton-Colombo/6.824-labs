@@ -78,44 +78,12 @@ The starting point for this project was the framework supplied by MIT's 6.824 (2
 \item \textbf{Interface and Experimental Harness}: an HTTP/JSON API was exposed so that clients can interface with the KV application. A \texttt{/status} endpoint was also created, exposing term, leader, commit index, last log index, applied index and /snapshot sizes, plus a benchmark client and a scenario-driven experiment driver (normal operation, network delay/loss, leader crash, partition, cluster-size sweep) that record raw CSVs and check every history for linearizability with Porcupine.
 \end{itemize}
 
-The remainder of this report is organized as follows. Section~\ref{sec:model} states the system model and the failure assumptions. Section~\ref{sec:arch} describes the architecture and the container deployment. Section~\ref{sec:algs} details the two algorithms and lists the reused code and our modifications.  Section~\ref{sec:correct} argues the correctness properties and describes the automated tests.  Section~\ref{sec:method} defines the experimental methodology and its reproducibility, Section~\ref{sec:results} presents the results, Section~\ref{sec:limits} discusses limitations and threats to validity, and Section~\ref{sec:conclusion} concludes.
-
-% ===========================================================================
-\section{Background: Raft}
-\label{sec:background}
-% ===========================================================================
-A common way to build a fault-tolerant service is the \emph{replicated state machine}~\cite{vansteen2023}: every server keeps its own copy of the service state (in our case, a key/value map) and a log of commands. If all servers apply the same commands in the same order, all copies go through the same states and end up equal, so any of them can answer for the service (Figure~\ref{fig:raft-rsm}). The hard part is getting the servers to agree on the contents of the log while messages get lost and servers crash, which is a consensus problem. Raft~\cite{raft2014} solves it for a fixed group of $N$ servers, and keeps working as long as a majority of them (more than $N/2$) is up and able to talk to each other. A cluster of three servers survives one failure, and a cluster of five survives two.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figs/raft-fig1-rsm.pdf}
-\caption{Replicated state machine architecture: the consensus module keeps a replicated log, and each state machine applies the same commands in the same order. Adapted from Figure~1 of~\cite{raft2014}.}
-\label{fig:raft-rsm}
-\end{figure}
-
-\paragraph{Roles and terms} At any moment, each server is a \emph{follower}, a \emph{candidate} or the \emph{leader} (Figure~\ref{fig:raft-states}). In normal operation there is exactly one leader, and the other servers are followers that only answer its requests. Time is divided into \emph{terms}, numbered with consecutive integers; each term starts with an election and has at most one leader. Every message carries the sender's term, a server that sees a term higher than its own adopts it and becomes a follower, and messages from older terms are rejected. This is how a leader that was cut off finds out that it has been replaced. The basic protocol needs only two RPCs, \texttt{RequestVote} and \texttt{AppendEntries}. Optionally, a \texttt{InstallSnapshot} RPC is defined for log compaction.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figs/raft-fig4-states.pdf}
-\caption{Raft server states and transitions. Adapted from Figure~4 of~\cite{raft2014}.}
-\label{fig:raft-states}
-\end{figure}
-
-\paragraph{Leader election} The leader sends periodic heartbeats (\texttt{AppendEntries} calls, possibly empty) to every follower. A follower that hears nothing for an \emph{election timeout} assumes the leader has failed: it increments its term, becomes a candidate, votes for itself and asks the other servers for their votes. Each server gives at most one vote per term, to the first candidate that asks, and only if that candidate's log is at least as up to date as its own. A candidate that gets votes from a majority becomes the leader and starts sending heartbeats. If the votes are split and nobody wins, the candidates time out and try again in a new term. Election timeouts are chosen at random, so this shouldn't happen many times in a row.
-
-\paragraph{Log replication} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
-
-\paragraph{Persistence and snapshots} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
-
-% \textbf{Clients.} Raft by itself only provides an agreed-upon log. To build a linearizable service on top of it, clients also need a way to find the leader and to retry when a request gets no answer, and servers must recognize retried requests so that they are not applied twice. Section~\ref{sec:algs-kv} describes how our key/value service does this.
+The remainder of this report is organized as follows. Section~\ref{sec:model} states the system model and the failure assumptions. Section~\ref{sec:arch} describes the architecture and the container deployment. Section~\ref{sec:algs} details the two algorithms and lists the reused code and our modifications.  Section~\ref{sec:correct} argues the correctness properties and describes the automated tests.  Section~\ref{sec:method} defines the experimental methodology and its reproducibility, Section~\ref{sec:results} presents the results, and Section~\ref{sec:conclusion} concludes. Since the main text assumes Raft as known, Appendix~\ref{sec:background} briefly reviews the protocol.
 
 % ===========================================================================
 \section{System Model}
 \label{sec:model}
 % ===========================================================================
-% \everton{Essa seção faz muitas referencias ao funcionamento do raft, sem explica-las antes. Verificar com o professor se uma explicação prévia do raft é necessária em uma possível seção "Background"}
-
 We consider a fixed set of $N$ servers that talk to each other, plus any number of clients. These server nodes are both KV-store servers and Raft peers. Clients come and go and only send requests. We make no assumptions about how fast nodes run or about shared clocks. The assumptions listed here are the ones we rely on when arguing correctness and progress in Section~\ref{sec:correct}.
 
 \subsection{Timing model}
@@ -423,6 +391,38 @@ Partition    & \(349 \pm 185\)\,ms & \(1632 \pm 404\)\,ms & not applicable \\
 \label{sec:conclusion}
 % ===========================================================================
 \todo{Recap: two algorithms, correctness under faults, performance cost. Future work: PreVote/check-quorum, batching, lease-based reads, incremental snapshots, message accounting, execution across multiple machines.}
+
+
+\newpage
+% ===========================================================================
+\appendices
+% ===========================================================================
+\section{Background: Raft}
+\label{sec:background}
+% ===========================================================================
+A common way to build a fault-tolerant service is the \emph{replicated state machine}~\cite{vansteen2023}: every server keeps its own copy of the service state (in our case, a key/value map) and a log of commands. If all servers apply the same commands in the same order, all copies go through the same states and end up equal, so any of them can answer for the service (Figure~\ref{fig:raft-rsm}). The hard part is getting the servers to agree on the contents of the log while messages get lost and servers crash, which is a consensus problem. Raft~\cite{raft2014} solves it for a fixed group of $N$ servers, and keeps working as long as a majority of them (more than $N/2$) is up and able to talk to each other. A cluster of three servers survives one failure, and a cluster of five survives two.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figs/raft-fig1-rsm.pdf}
+\caption{Replicated state machine architecture: the consensus module keeps a replicated log, and each state machine applies the same commands in the same order. Adapted from Figure~1 of~\cite{raft2014}.}
+\label{fig:raft-rsm}
+\end{figure}
+
+\paragraph{Roles and terms} At any moment, each server is a \emph{follower}, a \emph{candidate} or the \emph{leader} (Figure~\ref{fig:raft-states}). In normal operation there is exactly one leader, and the other servers are followers that only answer its requests. Time is divided into \emph{terms}, numbered with consecutive integers; each term starts with an election and has at most one leader. Every message carries the sender's term, a server that sees a term higher than its own adopts it and becomes a follower, and messages from older terms are rejected. This is how a leader that was cut off finds out that it has been replaced. The basic protocol needs only two RPCs, \texttt{RequestVote} and \texttt{AppendEntries}. Optionally, a \texttt{InstallSnapshot} RPC is defined for log compaction.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figs/raft-fig4-states.pdf}
+\caption{Raft server states and transitions. Adapted from Figure~4 of~\cite{raft2014}.}
+\label{fig:raft-states}
+\end{figure}
+
+\paragraph{Leader election} The leader sends periodic heartbeats (\texttt{AppendEntries} calls, possibly empty) to every follower. A follower that hears nothing for an \emph{election timeout} assumes the leader has failed: it increments its term, becomes a candidate, votes for itself and asks the other servers for their votes. Each server gives at most one vote per term, to the first candidate that asks, and only if that candidate's log is at least as up to date as its own. A candidate that gets votes from a majority becomes the leader and starts sending heartbeats. If the votes are split and nobody wins, the candidates time out and try again in a new term. Election timeouts are chosen at random, so this shouldn't happen many times in a row.
+
+\paragraph{Log replication} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
+
+\paragraph{Persistence and snapshots} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
 
 % ===========================================================================
 \bibliographystyle{IEEEtran}
