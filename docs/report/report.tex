@@ -106,8 +106,6 @@ A common way to build a fault-tolerant service is the \emph{replicated state mac
 
 \paragraph{Log replication} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
 
-\paragraph{Safety} Two extra rules keep committed entries from being lost when the leader changes. The voting rule above means that only a candidate that holds every committed entry can win an election. And a leader only declares an entry committed by counting replicas if the entry is from its own term; entries from older terms are committed indirectly, together with a newer one. Figure~8 of the Raft paper shows how a committed entry could be overwritten without this second rule. Section~\ref{sec:correct-safety} explains why these rules are enough.
-
 \paragraph{Persistence and snapshots} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
 
 % \textbf{Clients.} Raft by itself only provides an agreed-upon log. To build a linearizable service on top of it, clients also need a way to find the leader and to retry when a request gets no answer, and servers must recognize retried requests so that they are not applied twice. Section~\ref{sec:algs-kv} describes how our key/value service does this.
@@ -148,10 +146,72 @@ The system is correct when two kinds of properties hold:
 Section~\ref{sec:correct} argues safety and describes the tests that exercise it.
 
 % ===========================================================================
+\section{Implemented Algorithms}
+\label{sec:algs}
+% ===========================================================================
+
+The assignment asks for two complementary algorithms, one from the leader election group of topics and one from the consensus and replication group. Raft gives us both. Leader election (Section~\ref{sec:algs-election}) picks a single node to order the commands, and log replication (Section~\ref{sec:algs-replication}) gets a majority of nodes to agree on that order. On top of both, the key/value service (Section~\ref{sec:algs-kv}) turns the agreed-upon log into a linearizable store. The produced code mostly follows the specifications of the Raft paper~\cite{raft2014}, and most of it is in \texttt{src/raft/raft.go}.
+
+Each \texttt{Raft} object protects all of its state with a single mutex. A background goroutine loops over the node's current role and runs the behavior for that role (follower, candidate or leader), a second goroutine delivers committed entries to the service, and every outgoing RPC is sent from its own goroutine without holding the lock, so a slow or unreachable peer never blocks the others. The log is a slice of \texttt{(Command, Term)} entries in which position 0 is a placeholder. Before any snapshot it is an empty entry with term 0; after a snapshot it stands for the last entry the snapshot covers, and \texttt{trimmedEntriesCount} stores that entry's index.
+
+\subsection{Leader election and terms}
+\label{sec:algs-election}
+Each node keeps \texttt{currentTerm}, \texttt{votedFor}, its role, and the time its election timer was last reset. A follower checks every 50\,ms whether 500\,ms have passed since that reset, and the reset itself adds a random delay of 0 to 200\,ms, so the actual timeout is random between 500 and 700\,ms. The timer is reset when the node grants a vote, when it receives \texttt{AppendEntries} or \texttt{InstallSnapshot} from a leader of the current term, and when it starts an election. The leader sends a heartbeat every 150\,ms.
+
+When the timer expires, the node becomes a candidate and runs an election. It increments \texttt{currentTerm}, votes for itself, and sends \texttt{RequestVote} to every other node in parallel, with its term and the index and term of its last log entry. Replies are collected on a channel, and the election ends in one of four ways: a majority grants the vote and the node becomes the leader; a majority refuses; some reply carries a higher term, and the node goes back to being a follower; or the election timeout expires and the node tries again with a new term. The candidate also gives up if its role or term changes in the meantime, for example because a leader with a newer term contacted it.
+
+A node that receives \texttt{RequestVote} first applies the term rule: if the candidate's term is higher, it adopts that term, forgets its vote and becomes a follower. It then grants the vote only if it has not voted for someone else in this term and the candidate's log is at least as up to date as its own, meaning the candidate's last entry has a higher term, or the same term and an index at least as high. A granted vote is saved before the reply is sent. The same term rule is applied to every RPC request and reply in the implementation, so any node that sees a higher term steps down immediately, whatever its role.
+
+A new leader sets \texttt{nextIndex} for each follower to one past its own last entry, marks \texttt{matchIndex} as unknown, and sends heartbeats right away instead of waiting for the next period, so the other nodes learn about it quickly. Every node also remembers \texttt{leaderId}, the last leader it heard from, which is cleared whenever the term changes. The protocol itself does not use it, since followers do not redirect clients, but it is exposed in \texttt{/status}, and that is how the experiment driver finds the leader and measures how long a new election takes (Section~\ref{sec:method}).
+
+The heartbeats and the timeout together also act as Raft's failure detector. The detector can be wrong, for example when the leader is only slow or its messages are delayed, but a wrong suspicion only costs an extra election, never safety, because the term and voting rules do not depend on timing.
+
+\subsection{Log replication and consensus}
+\label{sec:algs-replication}
+\texttt{Start} is how the client service submits a command to the raft layer. If the node is not the leader, it returns immediately and says so. Otherwise, it appends the command to its log with the current term, saves the log, starts replicating to all followers right away instead of waiting for the next heartbeat, and returns the index the entry will have if it is committed.
+
+Replication to each follower is done by a single function, \texttt{replicateTo}, which is used both for heartbeats and for new entries. It builds an \texttt{AppendEntries} request with \texttt{PrevLogIndex} set to \texttt{nextIndex}$-1$, the term of that entry as \texttt{PrevLogTerm}, every entry from \texttt{nextIndex} to the end of the leader's log, and the leader's \texttt{commitIndex}. This means that a heartbeat sent to a follower that is behind is also the message that catches it up. If the follower accepts, the leader updates its \texttt{matchIndex} and \texttt{nextIndex}; if it refuses, the leader moves \texttt{nextIndex} back as described below, and the next call retries from there.
+
+On the follower side, the handler applies the term rule, rejects requests from older terms, records the sender as the current leader and resets the election timer. It then runs the consistency check: if it has no entry at \texttt{PrevLogIndex}, or the entry there has a different term, it refuses. Otherwise, it walks through the new entries, skips the ones it already has, cuts its log at the first one that conflicts and appends the rest. Finally, it saves the log, sets its \texttt{commitIndex} to the smaller of the leader's commit index and its own last index, and wakes up the goroutine that applies entries.
+
+After each reply, the leader looks for the highest index stored on a majority of nodes, itself included, using \texttt{matchIndex}. It scans backwards from the end of its log and stops at the first entry that is not from its current term, so it never commits an old entry by counting replicas (the Figure~8 rule). On every node, a separate goroutine waits on a condition variable until \texttt{commitIndex} passes \texttt{lastApplied}. It then copies the newly committed entries, and sends them to the client service on \texttt{applyCh}.
+
+\textbf{Fast backup.} Moving \texttt{nextIndex} back by one entry per refused request can take a long time when a follower has a long run of conflicting entries, which is exactly the situation in the \texttt{Backup} test (Section~\ref{sec:correct-tests}). So a follower that refuses also sends three hints, following the scheme from the 6.824 course~\cite{mit6824}: \texttt{XTerm}, the term of its conflicting entry; \texttt{XIndex}, the first index it holds with that term; and \texttt{XLen}, the length of its log. If the follower's log is too short, the leader jumps to \texttt{XLen}. If the leader has entries from \texttt{XTerm}, it jumps to its own last entry of that term; otherwise, it skips the follower's whole term by jumping to \texttt{XIndex}. Either way, the leader moves back by at least a whole term per round trip instead of a single entry.
+
+\textbf{Persistence.} The current term, the vote, the log and the snapshot index are encoded with \texttt{labgob} and saved whenever one of them changes, always before the reply to the RPC that caused the change is sent. On restart, the node reads them back and starts as a follower with \texttt{commitIndex} and \texttt{lastApplied} equal to the snapshot index, so it applies the rest of its log again once it learns the commit index from the leader.
+
+\textbf{Snapshots.} The service decides when to take a snapshot: after applying an entry, if Raft's saved state has reached \texttt{maxraftstate} bytes, it serializes its own state and calls \texttt{Snapshot(index, data)}. Raft then drops all entries up to \texttt{index}, keeps that entry as the new placeholder at position 0, and saves the trimmed state and the snapshot together. When a follower needs entries that the leader has already dropped, \texttt{replicateTo} sends \texttt{InstallSnapshot} instead, carrying the whole snapshot in a single message. The follower does not install it immediately. It keeps it as a pending snapshot and lets the apply goroutine hand it to the service through \texttt{applyCh}, in order with the other messages. The service then calls \texttt{CondInstallSnapshot}, which only accepts the snapshot if it is ahead of everything the node has committed. In that case, Raft keeps the part of its log after the snapshot if it agrees with it, discards the whole log otherwise, and moves \texttt{commitIndex} and \texttt{lastApplied} to the snapshot index.
+
+\subsection{Fault-Tolerant key/value service}
+\label{sec:algs-kv}
+After implementing Raft, a fault-tolerant, linearizable, distributed key/value service was built on top of it; most of its code is in \texttt{src/kvraft/server.go}. Each node runs a \texttt{KVServer} on top of its Raft peer. Its state is the key/value map plus, for each client, the \texttt{Seq} and result of the last operation applied for that client, which makes up the response cache. The service supports \texttt{Get}, \texttt{Put} and \texttt{Append}, and every one of them, reads included, is wrapped in an \texttt{Op} record with the client's \texttt{(ClientId, Seq)} pair and submitted to the Raft layer with \texttt{Start}. Sending reads through the log is the simplest way to make them linearizable.
+
+When a request arrives, the handler registers a channel for its \texttt{(ClientId, Seq)}, calls \texttt{Start}, and records which request it expects at the returned log index. It then waits for up to 5\,s. Meanwhile, a single goroutine reads \texttt{applyCh} and does the following for every committed command:
+\begin{enumerate}
+\item It checks whether a different request was waiting for this index. If so, the node lost its leadership and another leader's entry took that position, so the waiting request is answered with \texttt{ErrWrongLeader}.
+\item It compares the command's \texttt{Seq} with the cached one for that client. If it is not newer, the command is a duplicate and gets the cached result.
+\item Otherwise, it applies the command to the map and records the new \texttt{Seq} and result in the cache. If Raft's saved state has reached \texttt{maxraftstate}, it also serializes the map and the cache and passes them to \texttt{Snapshot}.
+\item It wakes up the handler waiting for this request, if there is one on this node.
+\end{enumerate}
+A request that is not committed within 5\,s, for example because the leader is stuck in a minority partition, is answered with \texttt{ErrTimeout}. Over HTTP, \texttt{ErrWrongLeader} becomes status 421 and \texttt{ErrTimeout} becomes 504. When a snapshot arrives through \texttt{applyCh}, the server calls \texttt{CondInstallSnapshot} and, if Raft accepts it, replaces its map and cache with the ones in the snapshot. On startup, it loads the latest snapshot from its persister, and Raft replays the entries that come after it.
+
+On the client side, the \texttt{Clerk} (\texttt{src/kvraft/client.go}) picks a random \texttt{ClientId} when it is created and increments \texttt{Seq} for every new operation. It sends each request to the server that last answered it successfully, and on any failure (no reply, \texttt{ErrWrongLeader} or \texttt{ErrTimeout}) it moves on to the next server and tries again with the same \texttt{Seq}, for as long as it takes. The same \texttt{Clerk} runs in the tests over \texttt{labrpc} and against the containers over HTTP. For the latter, \texttt{HTTPEnd} implements the \texttt{RPCClient} interface by turning each call into the matching request of Table~\ref{tab:endpoints}.
+
+\subsection{Reused code and modifications}
+\label{sec:algs-reuse}
+All the code we reused comes from the 2020 skeleton of MIT 6.824 labs 2 and 3~\cite{mit6824}. Here is what was kept, what was changed, and what was written ourselves:
+\begin{itemize}
+\item \textbf{Starting point:} the stubs in \texttt{raft.go}, \texttt{server.go}, \texttt{client.go} and \texttt{common.go}, which define the API that the tests call (\texttt{Make}, \texttt{Start}, \texttt{GetState}, \texttt{StartKVServer}, the \texttt{Clerk} methods and the RPC argument types). We kept that API and wrote everything behind it.
+\item \textbf{Kept as is:} the simulated network (\texttt{labrpc}), the gob wrapper (\texttt{labgob}), the Porcupine checker~\cite{porcupine} with its key/value model, and the test suites with their harnesses (\texttt{test\_test.go} and \texttt{config.go} in \texttt{src/raft} and \texttt{src/kvraft}).
+\item \textbf{Small changes to the skeleton:} we added the one-method \texttt{RPCClient} interface to \texttt{labrpc} and made the test harnesses use it instead of the concrete \texttt{*labrpc.ClientEnd} type, which changes no test logic, but allows us to switch between the in-memory simulated network of the tests and the actual TCP layer used in deployment. We also gave the \texttt{Persister} an optional file-backed mode (\texttt{MakeFilePersister}), used only in deployment, while the tests still use the in-memory version.
+\item \textbf{Written by us:} the Raft implementation (about 1{,}000 lines in \texttt{raft.go}), the KV server and \texttt{Clerk}, the TCP transport (\texttt{labrpc/tcp.go}), the HTTP API with \texttt{/status} and \texttt{HTTPEnd} (\texttt{kvraft/http.go}), the node binary (\texttt{cmd/kvnode}), the load generator (\texttt{cmd/kvbench}), our TCP/HTTP test, the \texttt{Dockerfile} and \texttt{compose.yaml}, and the experiment scripts.
+\end{itemize}
+
+% ===========================================================================
 \section{Architecture}
 \label{sec:arch}
 % ===========================================================================
-Every node runs the same Go binary (\texttt{cmd/kvnode}), with one container per node, orchestrated by Docker Compose (Figure~\ref{fig:arch}).  Inside each container a single process hosts both the \texttt{KVServer} and its \texttt{Raft} peer. The two share memory and exchange messages through the \texttt{applyCh} channel and \texttt{Raft.Start}, while different nodes talk to each other only over the network. Each node therefore opens two listeners: a TCP port for the internal Raft RPCs and an HTTP port for the client-facing key/value API.
+Regarding the dockerized deployment setup, every node runs the same Go binary (\texttt{cmd/kvnode}), with one container per node, orchestrated by Docker Compose (Figure~\ref{fig:arch}).  Inside each container a single process hosts both the \texttt{KVServer} and its \texttt{Raft} peer. The two share memory and exchange messages through the \texttt{applyCh} channel and \texttt{Raft.Start}, while different nodes talk to each other only over the network. Each node therefore opens two listeners: a TCP port for the internal Raft RPCs and an HTTP port for the client-facing key/value API.
 
 \begin{figure}[h]
 \centering
@@ -162,7 +222,7 @@ Every node runs the same Go binary (\texttt{cmd/kvnode}), with one container per
 
 The nodes are configured through environment variables. \texttt{NODE\_ID} selects the node's own index into \texttt{PEERS}, which lists the Raft addresses of every peer in index order; \texttt{RAFT\_ADDR} and \texttt{HTTP\_ADDR} set the two listeners; \texttt{DATA\_DIR} points at the mounted volume; and \texttt{MAX\_RAFT\_STATE} sets the snapshot threshold. See the \texttt{compose.yaml} file on this project's repository for an example of how to set these variables for a cluster of three nodes.
 
-This configurability also allows for the same code to run unchanged between the test harness and the container setup: in the tests the nodes are wired over the simulated \texttt{labrpc} network, while in the deployment they are wired over real TCP, and the difference is entirely in how the peer endpoints are created. In the code, this is achieved by having Raft and the KV service depend only on a one-method interface for communication, \texttt{RPCClient}, which both \texttt{labrpc.ClientEnd} (the in-memory simulated network) and \texttt{labrpc.TCPEnd} (a \texttt{net/rpc} client over TCP with a dial and a call deadline) implement.  The test suite exercises exactly the same protocol code that runs in deployment, only over a network that can be told to drop, delay and reorder messages at will.
+% This configurability also allows for the same code to run unchanged between the test harness and the container setup: in the tests the nodes are wired over the simulated \texttt{labrpc} network, while in the deployment they are wired over real TCP, and the difference is entirely in how the peer endpoints are created. In the code, this is achieved by having Raft and the KV service depend only on a one-method interface for communication, \texttt{RPCClient}, which both \texttt{labrpc.ClientEnd} (the in-memory simulated network) and \texttt{labrpc.TCPEnd} (a \texttt{net/rpc} client over TCP with a dial and a call deadline) implement.  The test suite exercises exactly the same protocol code that runs in deployment, only over a network that can be told to drop, delay and reorder messages at will.
 
 Clients have their own communication channel, separate from the one used by Raft, via HTTP/JSON to the published ports, over the endpoints described in Table~\ref{tab:endpoints}. The \texttt{Clerk} in the client library remembers the node it last got an answer from and, on \texttt{ErrWrongLeader}, advances to the next server and retries.  Followers answer read and write requests with HTTP \texttt{421} and \texttt{ErrWrongLeader} rather than forwarding them, so leader discovery is entirely client-side.  Every request carries a \texttt{(ClientId, Seq)} pair so that retried requests are answered from a cache instead of being applied twice.
 
@@ -186,31 +246,7 @@ POST & \texttt{/kv/\{key\}} & append the request body to the key \\
 \end{tabular}
 \end{table}
 
-Finally, each node persists its durable state to a mounted volume. The raft side persists the current term, vote and log, and the kvserver side persists the key/value map and the response cache. For more details, see (Section~\ref{sec:model-persistence}). 
-
-% ===========================================================================
-\section{Implemented Algorithms}
-\label{sec:algs}
-% ===========================================================================
-\todo{Make explicit that these are the two complementary algorithms: leader election (theme 1) and consensus/replication (theme 2).}
-
-\subsection{Leader election and terms}
-\todo{Randomized timeouts, voting (log up-to-date rule, one vote per term), conversion to follower on a higher term; role of the observed
-\texttt{leaderId}.}
-
-\subsection{Log replication and consensus}
-\todo{\texttt{AppendEntries} with \texttt{PrevLogIndex/Term}, retry with
-\texttt{XTerm/XIndex/XLen}, \texttt{commitIndex} advanced only for entries from
-the current term (Figure 8 of the paper), snapshots and
-\texttt{InstallSnapshot}.}
-
-\subsection{Linearizable KV state machine}
-\todo{Every operation (reads included) goes through the log; response cache keyed by \texttt{(ClientId, Seq)} for exactly-once application; replies matched by log index; snapshot of the map plus the cache.}
-
-\subsection{Reused code and modifications}
-\todo{Mandatory citation: MIT 6.824 labs 2A--3B skeleton (\texttt{labrpc},
-\texttt{labgob}, \texttt{porcupine}, tests)~\cite{mit6824}; describe what was
-changed: the Raft/KV implementation, the \texttt{RPCClient} interface for real TCP, the on-disk \texttt{Persister}, the \texttt{/status} endpoint, the benchmark client and the experiment scripts.}
+Finally, each node persists its durable state to a mounted volume. The raft side persists the current term, vote and log, and the kvserver side persists the key/value map and the response cache. For more details, see (Section~\ref{sec:model-persistence}).
 
 % ===========================================================================
 \section{Correctness Properties and Tests}
@@ -379,12 +415,6 @@ Partition    & \(349 \pm 185\)\,ms & \(1632 \pm 404\)\,ms & not applicable \\
 
 \subsection{Scalability}
 \todo{Results with \(N=3,5,7\): throughput and latency; discuss why the leader serializes and where replication cost would show up (message counts).}
-
-% ===========================================================================
-\section{Limitations and Threats to Validity}
-\label{sec:limits}
-% ===========================================================================
-\todo{Containers on one host are not independent failure domains; variability from short runs; no batching; no PreVote; no message/byte counters; Docker Desktop environment.}
 
 % ===========================================================================
 \section{Conclusion and Future Work}
