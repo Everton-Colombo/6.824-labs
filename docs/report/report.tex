@@ -69,7 +69,7 @@ Replicating a service across several machines is the standard way to make system
 With this in mind, this project had two main elements: 1. Implementing Raft, as well as a simple key-value store system on top of it, with the goal of understanding in detail how this consensus algorithm works; and 2. Building an experimental harness on top of these implementations to measure the cost of fault tolerance in a realistic environment. By implementing the resulting system, key distributed systems concepts were explored, such as leader election, consensus, replication and consistency, fault detection and tolerance, peer-to-peer communication, among others.
 
 \subsection*{Basis and contributions}
-The starting point for this project was the framework supplied by MIT's 6.824 (2020) course labs 2 and 3~\cite{mit6824}. It provided stub APIs, an in-memory simulated network (\texttt{labrpc}), a gob (Go's serialization library) wrapper (\texttt{labgob}), the Porcupine linearizability checker~\cite{porcupine}, and, crucially, a comprehensive and thorough set of tests. This skeleton was kept intact and was used to guide and verify our implementation. On the other hand, the protocol and service implementations, the runtime communication setup, persistence, container packaging, client interface, and the whole experimental apparatus were written by us.  Concretely, this project's contributions are:
+The starting point was the skeleton of MIT's 6.824 (2020) labs 2 and 3~\cite{mit6824}, which supplied interfaces, an in-memory simulated network for tests, the Porcupine linearizability checker~\cite{porcupine}, and, crucially, a thorough set of tests. The protocol and service implementations, client interface, container packaging, and experimental apparatus were written by us; Appendix~\ref{sec:algs-reuse} lists exactly what was kept, changed, and written. Concretely, this project's contributions are:
 
 \begin{itemize}
 \item \textbf{In-House Raft Implementation:} following MIT 6.824's labs 2A--2C + 3B, our custom raft implementation closely follows Raft's extended paper guidelines, including  leader election with randomized timeouts, the log up-to-date voting rule, log replication with fast backup, safety rules for commitment across terms, persistent state restored after a crash, and log compaction with snapshots.
@@ -78,7 +78,7 @@ The starting point for this project was the framework supplied by MIT's 6.824 (2
 \item \textbf{Interface and Experimental Harness}: an HTTP API was exposed so that clients can interface with the KV application. A \texttt{/status} endpoint was also created, exposing raft state variables, plus a benchmark client and a scenario-driven experiment script (normal operation, network delay/loss, leader crash, partition, cluster-size sweep) that records raw CSVs and checks every history for linearizability with Porcupine.
 \end{itemize}
 
-The remainder of this report is organized as follows. Section~\ref{sec:model} states the system model and the failure assumptions. Section~\ref{sec:arch} describes the architecture and the container deployment. Section~\ref{sec:algs} details the two algorithms and lists the reused code and our modifications.  Section~\ref{sec:correct} argues the correctness properties and describes the automated tests.  Section~\ref{sec:method} defines the experimental methodology and its reproducibility, Section~\ref{sec:results} presents the results, and Section~\ref{sec:conclusion} concludes. Since the main text assumes Raft as known, Appendix~\ref{sec:background} briefly reviews the protocol.
+The remainder of this report is organized as follows. Section~\ref{sec:model} states the system model and the failure assumptions. Section~\ref{sec:arch} describes the architecture and the container deployment. Section~\ref{sec:algs} details the implemented algorithms.  Section~\ref{sec:correct} argues the correctness properties and describes the automated tests.  Section~\ref{sec:method} defines the experimental methodology and its reproducibility, Section~\ref{sec:results} presents the results, and Section~\ref{sec:conclusion} concludes. Since the main text assumes Raft as known, Appendix~\ref{sec:background} briefly reviews the protocol.
 
 % ===========================================================================
 \section{System Model}
@@ -156,16 +156,6 @@ A request that is not committed within 5\,s, for example because the leader is s
 
 On the client side, the \texttt{Clerk} (\texttt{src/kvraft/client.go}) picks a random \texttt{ClientId} when it is created and increments \texttt{Seq} for every new operation. It sends each request to the server that last answered it successfully, and on any failure (no reply, \texttt{ErrWrongLeader} or \texttt{ErrTimeout}) it moves on to the next server and tries again with the same \texttt{Seq}, for as long as it takes. The same \texttt{Clerk} runs in the tests over \texttt{labrpc} and against the containers over HTTP. For the latter, \texttt{HTTPEnd} implements the \texttt{RPCClient} interface by turning each call into the matching request of Table~\ref{tab:endpoints}.
 
-\subsection{Reused code and modifications}
-\label{sec:algs-reuse}
-All the code we reused comes from the 2020 skeleton of MIT 6.824 labs 2 and 3~\cite{mit6824}. Here is what was kept, what was changed, and what was written ourselves:
-\begin{itemize}
-\item \textbf{Starting point:} the stubs in \texttt{raft.go}, \texttt{server.go}, \texttt{client.go} and \texttt{common.go}, which define the API that the tests call (\texttt{Make}, \texttt{Start}, \texttt{GetState}, \texttt{StartKVServer}, the \texttt{Clerk} methods and the RPC argument types). We kept that API and wrote everything behind it.
-\item \textbf{Kept as is:} the simulated network (\texttt{labrpc}), the gob wrapper (\texttt{labgob}), the Porcupine checker~\cite{porcupine} with its key/value model, and the test suites with their harnesses (\texttt{test\_test.go} and \texttt{config.go} in \texttt{src/raft} and \texttt{src/kvraft}).
-\item \textbf{Small changes to the skeleton:} we added the one-method \texttt{RPCClient} interface to \texttt{labrpc} and made the test harnesses use it instead of the concrete \texttt{*labrpc.ClientEnd} type, which changes no test logic, but allows us to switch between the in-memory simulated network of the tests and the actual TCP layer used in deployment. We also gave the \texttt{Persister} an optional file-backed mode (\texttt{MakeFilePersister}), used only in deployment, while the tests still use the in-memory version.
-\item \textbf{Written by us:} the Raft implementation (about 1{,}000 lines in \texttt{raft.go}), the KV server and \texttt{Clerk}, the TCP transport (\texttt{labrpc/tcp.go}), the HTTP API with \texttt{/status} and \texttt{HTTPEnd} (\texttt{kvraft/http.go}), the node binary (\texttt{cmd/kvnode}), the load generator (\texttt{cmd/kvbench}), our TCP/HTTP test, the \texttt{Dockerfile} and \texttt{compose.yaml}, and the experiment scripts.
-\end{itemize}
-
 % ===========================================================================
 \section{Architecture}
 \label{sec:arch}
@@ -211,7 +201,7 @@ Finally, each node persists its durable state to a mounted volume. The raft side
 \section{Correctness Properties and Tests}
 \label{sec:correct}
 % ===========================================================================
-The Raft paper~\cite{raft2014} already proves that the protocol is safe, so we did not try to prove anything new. What we had to make sure of was that our code really follows the rules that proof depends on, and then test that it does. This section goes through the safety properties of Section~\ref{sec:model-properties}, shows where each one comes from in the implementation, and then describes the tests we used to check them.
+The Raft paper~\cite{raft2014} already proves that the protocol is safe, so we did not try to prove anything new. What we had to make sure of was that our code really follows the rules that proof depends on, and then test that it does. This section goes through the safety properties this system claims, shows where each one comes from in the implementation, and then describes the tests we used to check them.
 
 \subsection{Safety arguments}
 \label{sec:correct-safety}
@@ -412,6 +402,18 @@ A common way to build a fault-tolerant service is the \emph{replicated state mac
 \paragraph{Log replication} Clients send their commands to the leader, which appends each one to its log as a new entry tagged with the current term, and sends it to the followers with \texttt{AppendEntries}. Each call also carries the index and term of the entry just before the new ones, and a follower only accepts it if its own log has a matching entry at that position. If not, the follower refuses, the leader retries from an earlier position, and once the two logs match, the follower's conflicting entries are replaced by the leader's. When an entry is stored on a majority of servers, the leader considers it \emph{committed}, applies it to its state machine and answers the client service. Followers learn the new commit index from later \texttt{AppendEntries} calls and apply the entry too.
 
 \paragraph{Persistence and snapshots} Each server saves its current term, its vote and its log to stable storage before answering any RPC, so that it can crash, restart and rejoin without breaking promises it made before the crash. Since the log would otherwise grow forever, the service periodically saves a \emph{snapshot} of its state, and Raft throws away the log entries that the snapshot covers. A follower that is so far behind that the leader no longer has the entries it needs receives the leader's snapshot through \texttt{InstallSnapshot}.
+
+% ===========================================================================
+\section{Reused Code and Modifications}
+\label{sec:algs-reuse}
+% ===========================================================================
+All the code we reused comes from the framework MIT's 2020 offering of the 6.824 course labs 2 and 3~\cite{mit6824}. Here is what was kept, what was changed, and what was self-written.
+
+The starting point were the stubs in \texttt{raft.go}, \texttt{server.go}, \texttt{client.go} and \texttt{common.go}, which define the API that the tests call (\texttt{Make}, \texttt{Start}, \texttt{GetState}, \texttt{StartKVServer}, the \texttt{Clerk} methods and the RPC argument types). We kept that API and wrote everything behind it. Among the elements kept as they were, are the simulated in-memory network (\texttt{labrpc}), the gob wrapper (\texttt{labgob}), the Porcupine checker~\cite{porcupine} with its key/value model, and the test suites with their harnesses (\texttt{test\_test.go} and \texttt{config.go} in \texttt{src/raft} and \texttt{src/kvraft}).
+
+Small changes to the labs' skeleton were made. The one-method \texttt{RPCClient} interface was added to \texttt{labrpc} and the test harnesses was made to use it instead of the concrete \texttt{*labrpc.ClientEnd} type, which changes no test logic, but allowed tswitching between the in-memory simulated network of the tests and the actual TCP layer used in deployment. We also gave the \texttt{Persister} an optional file-backed mode (\texttt{MakeFilePersister}), used only in deployment, while the tests still use the in-memory version.
+
+Everything else was self-written: the Raft implementation (about 1{,}000 lines in \texttt{raft.go}), the KV server and \texttt{Clerk}, the TCP transport (\texttt{labrpc/tcp.go}), the HTTP API with \texttt{/status} and \texttt{HTTPEnd} (\texttt{kvraft/http.go}), the node binary (\texttt{cmd/kvnode}), the load generator (\texttt{cmd/kvbench}), our TCP/HTTP test, the \texttt{Dockerfile} and \texttt{compose.yaml}, and the experiment scripts.
 
 % ===========================================================================
 \bibliographystyle{IEEEtran}
