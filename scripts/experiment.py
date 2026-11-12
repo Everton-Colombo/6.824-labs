@@ -263,7 +263,7 @@ class Experiment:
             w = csv.writer(f)
             w.writerow(["seed", "fault_unix_ms", "time_to_elect_ms", "ttr_service_ms",
                         "ttr_replica_ms", "pre_term", "new_term", "converged",
-                        "fault_cmd_ms"])
+                        "fault_cmd_ms", "heal_unix_ms"])
             w.writerows(rows)
         print("  " + ",".join(["seed", "t_elect", "ttr_service", "ttr_replica", "converged"]))
         for r in rows:
@@ -327,10 +327,7 @@ class Experiment:
         except subprocess.TimeoutExpired:
             os.killpg(os.getpgid(probe.pid), signal.SIGKILL)
             probe.wait(timeout=5)
-        stop.set()
-        thread.join()
 
-        t_elect = self.time_to_elect(timeline, fault_ms, pre_term)
         t_service = self.time_to_service(probe_path, fault_ms)
 
         if kind == "kill":
@@ -350,6 +347,10 @@ class Experiment:
 
         leader_now = self.c.wait_leader(timeout=5) or leader
         new_term = (self.c.status(leader_now) or {}).get("term", -1)
+        stop.set()
+        thread.join()
+
+        t_elect = self.time_to_elect(timeline, fault_ms, pre_term)
         print(f"  seed={seed}: t_elect={t_elect}ms ttr_service={t_service}ms "
               f"ttr_replica={t_replica}ms term {pre_term}->{new_term}")
         if not converged and kind == "partition":
@@ -363,7 +364,7 @@ class Experiment:
                 t_elect if t_elect is not None else "na",
                 t_service if t_service is not None else "na",
                 t_replica, pre_term, new_term,
-                str(converged).lower(), fault_cmd_ms]
+                str(converged).lower(), fault_cmd_ms, restart_ms]
 
     def wait_probe_recovery(self, probe_path: Path, fault_ms: int, timeout: float) -> bool:
         """Wait until the probe logged a write that finished after the fault."""

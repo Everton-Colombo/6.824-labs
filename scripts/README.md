@@ -72,6 +72,8 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
   because the leader usually has an uncommitted tail.
 * **fault_cmd** (ms) — how long `docker stop` / `docker network disconnect`
   took to return.
+* **heal_unix** (ms) — when `docker start` / `docker network connect`
+  returned; the TTR-replica interval starts at this instant.
 * **leader churn** — number of leader changes and `max(term) - min(term)` over
   the baseline run, plus changes/minute.
 * **retry cost** — from `runs.csv`: `retry_pct`, `attempts_per_op`,
