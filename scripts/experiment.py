@@ -328,6 +328,9 @@ class Experiment:
             cwd=ROOT, stdout=subprocess.DEVNULL, start_new_session=True,
         )
         stop, thread = self.start_timeline(timeline)
+        # `go run` compiles first, so a fixed sleep may end before the probe starts
+        if not self.wait_probe_started(probe_path, timeout=60):
+            print("  warning: probe did not start within 60s", file=sys.stderr)
         time.sleep(1.0)
 
         # before the command: the fault takes effect while it runs
@@ -393,6 +396,19 @@ class Experiment:
                 t_service if t_service is not None else "na",
                 t_replica, pre_term, new_term,
                 str(converged).lower(), fault_cmd_ms, restart_ms]
+
+    def wait_probe_started(self, probe_path: Path, timeout: float) -> bool:
+        """Wait until the probe logged its first write."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with probe_path.open(newline="") as f:
+                    if any(csv.DictReader(f)):
+                        return True
+            except FileNotFoundError:
+                pass
+            time.sleep(0.05)
+        return False
 
     def wait_probe_recovery(self, probe_path: Path, fault_ms: int, timeout: float) -> bool:
         """Wait until the probe logged a write that finished after the fault."""
