@@ -339,13 +339,7 @@ Each parameter is varied at three levels with the others at their baseline value
 netem delay $d \in \{0, 50, 100\}$\,ms, loss $p \in \{0, 2, 5\}$\,\%, 
 and cluster size $N \in \{3,5,7\}$ for the run without faults, the leader crash and the partition. 
 Delay and loss use $N=3$, and the run without faults on \texttt{compose.yaml} is the level 0 of both. 
-Every configuration runs with the same seeds $1,\dots,10$, and we report medians over seeds. 
-Every run is also a correctness test:
-Porcupine~\cite{porcupine} checks the history of each benchmark for linearizability
-(a check that exceeds its 5\,s budget is inconclusive and not counted), 
-and \texttt{scripts/verify\_timelines.py} checks every timeline for election safety and term monotonicity, 
-the properties that the test suite checks on the simulated network (Section~\ref{sec:correct-tests}), 
-here on the real deployment.
+Every configuration runs with the same seeds $1,\dots,10$, and we report medians over seeds.
 
 % ===========================================================================
 \section{Results}
@@ -420,19 +414,7 @@ Partition    & \(349 \pm 185\)\,ms & \(1632 \pm 404\)\,ms & not applicable \\
 % ===========================================================================
 \section{Limitations}\label{sec:limits}
 % ===========================================================================
-The implementation has known limitations. 
-A new leader does not append the no-op entry that Raft prescribes at the start of each term~\cite{raft2014}, 
-so entries from earlier terms are committed only when a client sends a new command. 
-\texttt{Get}s go through the log like writes, which keeps them linearizable but costs a full replication round. 
-There is no PreVote and no check-quorum: an isolated follower inflates its term and forces an election when it returns, 
-and an isolated leader does not step down. 
-Snapshots are taken synchronously by the apply loop and serialize the whole key/value map, 
-and with \texttt{maxraftstate} at 4096 bytes they are frequent. 
-The Raft state and the snapshot are written to two files, 
-each replaced atomically but not together and without \texttt{fsync}, 
-so a crash between the two writes can leave them out of step. Finally, each \texttt{Clerk} starts at node~0, 
-and its 2\,s timeout bounds how fast it notices a failed leader.
-All nodes share one host, so they are not independent failure domains, and absolute numbers are specific to it.
+While developing and testing this project, a number of limitations were identified. In the raft implementation, a new leader does not append the no-op entry that the paper prescribes at the start of each term \cite{raft2014}, so entries from earlier terms are committed only when a client sends a new command. There is no "PreVote" and no "check-quorum" step when trigerring elections, so an isolated follower inflates its term and forces an election when it returns, and an isolated leader does not step down. The Raft state and the snapshot are written to two files, each replaced atomically but not together, so a crash between the two writes can leave them out of step. Finally, in our deployment setup, all nodes share one host, so they are not independent failure domains; for replication to be effective, the probability of nodes failing should be independent of one another.
 
 % ===========================================================================
 \section{Conclusion and Future Work}
