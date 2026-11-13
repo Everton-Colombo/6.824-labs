@@ -2,7 +2,8 @@
 
 `experiment.py` drives the cluster, injects the fault, polls `/status` and writes
 one directory of CSV per scenario under `scripts/experiments/`. `analysis.ipynb` loads
-those CSVs for tables and plots.
+those CSVs for tables and plots. `run_experiments.py` runs every configuration used in the report, 
+replacing the results under `scripts/experiments/`, and checks the timelines.
 
 ```bash
 docker compose up -d
@@ -16,14 +17,17 @@ scripts/experiment.py sweep        --sizes 3 5 7 --seeds 10
 Common options: `--clients`, `--ops` (per client), `--poll` (status sampling
 period, default 50 ms), `--out` (default `scripts/experiments`), `--probe-ops`,
 `--probe-interval`, `--bench-timeout` (a run that cannot reach quorum is aborted
-instead of hanging), `--network`. Only the Python standard library is used.
+instead of hanging), `--network`, `--n` (bring up and tear down an N-node
+cluster, like sweep; default: the `compose.yaml` cluster). Only the Python
+standard library is used.
 
 What each scenario does:
 
 * **baseline** — no fault. Measures throughput/latency and counts leader changes
   and term growth over the run.
 * **netem** — `tc netem delay/loss` on every node's `eth0` (egress), then the
-  same workload; the qdisc is always removed on exit.
+  same workload; the qdisc is always removed on exit. Each seed also records a
+  timeline and a `summary.csv` row with its leader churn.
 * **kill-leader** — stops the leader container, benchmarks the surviving
   majority, restarts it and measures replica catch-up.
 * **partition** — `docker network disconnect` on the leader, same measurements,
@@ -41,7 +45,7 @@ What each scenario does:
 | `timeline-<seed>.csv` | `/status` of every node every `--poll` seconds (baseline uses `timeline.csv`): term, leader, commit/last-log/last-applied, `raft.state` and snapshot bytes |
 | `probe-<seed>.csv` | probe writes: `start_ns,end_ns,lat_ms` (kill/partition only) |
 | `summary.csv` | derived metrics; one row per seed for kill/partition, aggregates for baseline |
-| `compose-n<N>.yaml` | generated compose file (sweep only) |
+| `compose-n<N>.yaml` | generated compose file (sweep and `--n`) |
 
 `runs.csv` columns:
 
@@ -56,6 +60,9 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
 
 ## Derived metrics
 
+* **fault_unix** (ms) — the fault timestamp, taken right before `docker stop` /
+  `docker network disconnect`, since the fault is already in effect while the
+  command runs.
 * **time-to-elect** (ms) — fault timestamp → first `/status` sample where some
   node reports `is_leader` at a term greater than the pre-fault term.
 * **TTR-service** (ms) — fault timestamp → first probe write that completes.
@@ -67,6 +74,11 @@ tried, `wrong_leader_pct` the share of attempts answered with `421`.
   returning node's `last_applied >= leader.commit_index`. Compares
   `last_applied` against the leader's `commit_index` (not `last_log_index`),
   because the leader usually has an uncommitted tail.
+* **fault_cmd** (ms) — how long `docker stop` / `docker network disconnect`
+  took to return. TTR-service only counts probe writes that end after that,
+  since writes ending while the command runs were served before the fault.
+* **heal_unix** (ms) — when `docker start` / `docker network connect`
+  returned; the TTR-replica interval starts at this instant.
 * **leader churn** — number of leader changes and `max(term) - min(term)` over
   the baseline run, plus changes/minute.
 * **retry cost** — from `runs.csv`: `retry_pct`, `attempts_per_op`,
@@ -110,6 +122,15 @@ go run ./cmd/kvbench -probe -probe-log /tmp/probe.csv \
 
 It needs `pandas` and `matplotlib` (`pip install pandas matplotlib`), plus
 Jupyter to run the notebook.
+
+## Safety check on the timelines
+
+```bash
+scripts/verify_timelines.py                                # scripts/experiments
+scripts/verify_timelines.py scripts/exp-a scripts/exp-b    # other --out directories
+```
+
+Checks every `timeline*.csv` for election safety (at most one node reports `is_leader` per term) and that a node's term never decreases, even across restarts. Prints one line per file and exits non-zero on a violation.
 
 ## Known limitation seen by `partition`
 

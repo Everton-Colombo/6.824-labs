@@ -1,7 +1,0 @@
-tag,nodes,clients,ops,seed,duration_s,throughput_ops_s,p50_ms,p95_ms,p99_ms,retry_pct,attempts_per_op,attempts_p99,wrong_leader_pct,linearizable
-partition-during,2,8,400,1,2.007,199.33,5.363,228.187,527.563,0.00,1.00,1.0,0.00,ok
-partition-after,3,8,400,1,0.326,1226.59,2.558,5.996,184.231,2.00,3.64,132.0,72.55,ok
-partition-during,2,8,400,2,0.206,1943.91,3.440,8.572,11.448,0.00,1.00,1.0,0.00,ok
-partition-after,3,8,400,2,0.232,1726.25,3.811,9.562,18.711,2.00,1.04,3.0,3.85,ok
-partition-during,2,8,400,3,0.129,3107.26,2.211,4.500,9.604,2.00,1.02,2.0,1.96,ok
-partition-after,3,8,400,3,0.553,723.39,2.162,6.385,428.507,2.00,16.45,778.0,93.92,ok
