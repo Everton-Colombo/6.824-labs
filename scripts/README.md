@@ -2,7 +2,8 @@
 
 `experiment.py` drives the cluster, injects the fault, polls `/status` and writes
 one directory of CSV per scenario under `scripts/experiments/`. `analysis.ipynb` loads
-those CSVs for tables and plots.
+those CSVs for tables and plots. `run_experiments.py` runs every configuration used in the report, 
+replacing the results under `scripts/experiments/`, and checks the timelines.
 
 ```bash
 docker compose up -d
