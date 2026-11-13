@@ -31,6 +31,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -109,6 +110,11 @@ class Cluster:
         return subprocess.run(cmd, cwd=ROOT, check=check,
                               stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 
+    def network_aliases(self, node: str, network: str) -> list[str]:
+        out = subprocess.run(["docker", "inspect", node],
+                             check=True, capture_output=True, text=True).stdout
+        return json.loads(out)[0]["NetworkSettings"]["Networks"][network]["Aliases"] or []
+
 
 def node_index(port: int) -> int:
     return port - 9000
@@ -150,27 +156,36 @@ class Experiment:
 
     def start_timeline(self, path: Path) -> tuple[threading.Event, threading.Thread]:
         stop = threading.Event()
+        lock = threading.Lock()
 
         def loop():
             with path.open("w", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(TIMELINE_COLS)
-                while not stop.is_set():
-                    t = now_ms()
-                    for i, port in enumerate(self.c.ports):
+
+                # one thread per node, so an unreachable node only delays its own samples
+                def poll_node(i: int, port: int) -> None:
+                    while not stop.is_set():
                         st = self.c.status(port)
-                        if not st:
-                            continue
-                        w.writerow([
-                            t, i, st.get("term"),
-                            str(bool(st.get("is_leader"))).lower(),
-                            st.get("leader_id"),
-                            st.get("commit_index"), st.get("last_log_index"),
-                            st.get("last_applied"), st.get("raft_state_bytes"),
-                            st.get("snapshot_bytes"),
-                        ])
-                    f.flush()
-                    stop.wait(self.args.poll)
+                        if st:
+                            with lock:
+                                w.writerow([
+                                    now_ms(), i, st.get("term"),
+                                    str(bool(st.get("is_leader"))).lower(),
+                                    st.get("leader_id"),
+                                    st.get("commit_index"), st.get("last_log_index"),
+                                    st.get("last_applied"), st.get("raft_state_bytes"),
+                                    st.get("snapshot_bytes"),
+                                ])
+                                f.flush()
+                        stop.wait(self.args.poll)
+
+                pollers = [threading.Thread(target=poll_node, args=(i, port), daemon=True)
+                           for i, port in enumerate(self.c.ports)]
+                for p in pollers:
+                    p.start()
+                for p in pollers:
+                    p.join()
 
         thread = threading.Thread(target=loop, daemon=True)
         thread.start()
@@ -239,10 +254,27 @@ class Experiment:
                                check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         tc("qdisc", "add", "dev", "eth0", "root", "netem", "delay", delay, "loss", loss)
+        rows = []
         try:
-            self.seeds(f"netem-{delay}-{loss}", self.c.peers)
+            for seed in range(1, self.args.seeds + 1):
+                timeline = self.dir / f"timeline-{seed}.csv"
+                stop, thread = self.start_timeline(timeline)
+                try:
+                    self.bench(f"netem-{delay}-{loss}", self.c.peers, seed)
+                finally:
+                    stop.set()
+                    thread.join()
+                changes = self.leader_changes(timeline)
+                minutes = self.duration_minutes(timeline)
+                per_min = changes / minutes if minutes else 0.0
+                rows.append([seed, changes, f"{per_min:.2f}", self.term_growth(timeline)])
+                print(f"  seed={seed}: leader changes: {changes}, term growth: {rows[-1][3]}")
         finally:
             tc("qdisc", "del", "dev", "eth0", "root")
+            with (self.dir / "summary.csv").open("w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["seed", "leader_changes", "leader_changes_per_min", "term_growth"])
+                w.writerows(rows)
 
     def leader_fault(self, kind: str) -> None:
         if self.args.probe_ops <= 0:
@@ -253,7 +285,8 @@ class Experiment:
         with (self.dir / "summary.csv").open("w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["seed", "fault_unix_ms", "time_to_elect_ms", "ttr_service_ms",
-                        "ttr_replica_ms", "pre_term", "new_term", "converged"])
+                        "ttr_replica_ms", "pre_term", "new_term", "converged",
+                        "fault_cmd_ms", "heal_unix_ms"])
             w.writerows(rows)
         print("  " + ",".join(["seed", "t_elect", "ttr_service", "ttr_replica", "converged"]))
         for r in rows:
@@ -282,6 +315,9 @@ class Experiment:
             sys.exit("no leader")
         idx = node_index(leader)
         pre_term = (self.c.status(leader) or {}).get("term", -1)
+        # network connect drops compose's aliases (e.g. node1), so restore them on heal
+        aliases = (self.c.network_aliases(self.c.nodes[idx], self.args.network)
+                   if kind == "partition" else [])
 
         probe_path = self.dir / f"probe-{seed}.csv"
         timeline = self.dir / f"timeline-{seed}.csv"
@@ -292,15 +328,21 @@ class Experiment:
             cwd=ROOT, stdout=subprocess.DEVNULL, start_new_session=True,
         )
         stop, thread = self.start_timeline(timeline)
+        # `go run` compiles first, so a fixed sleep may end before the probe starts
+        if not self.wait_probe_started(probe_path, timeout=60):
+            print("  warning: probe did not start within 60s", file=sys.stderr)
         time.sleep(1.0)
 
+        # before the command: the fault takes effect while it runs
+        fault_ms = now_ms()
         if kind == "kill":
             subprocess.run(["docker", "stop", self.c.nodes[idx]], check=True,
                            stdout=subprocess.DEVNULL)
         else:
             subprocess.run(["docker", "network", "disconnect", self.args.network,
                             self.c.nodes[idx]], check=True, stdout=subprocess.DEVNULL)
-        fault_ms = now_ms()
+        fault_done_ms = now_ms()
+        fault_cmd_ms = fault_done_ms - fault_ms
 
         if self.c.wait_leader() is None:
             print("  warning: no leader within 20s", file=sys.stderr)
@@ -308,24 +350,22 @@ class Experiment:
 
         # the probe's in-flight write only completes once the cluster serves
         # again; give it time to log that completion before killing it
-        self.wait_probe_recovery(probe_path, fault_ms, timeout=15)
+        self.wait_probe_recovery(probe_path, fault_done_ms, timeout=15)
         os.killpg(os.getpgid(probe.pid), signal.SIGTERM)
         try:
             probe.wait(timeout=5)
         except subprocess.TimeoutExpired:
             os.killpg(os.getpgid(probe.pid), signal.SIGKILL)
             probe.wait(timeout=5)
-        stop.set()
-        thread.join()
 
-        t_elect = self.time_to_elect(timeline, fault_ms, pre_term)
-        t_service = self.time_to_service(probe_path, fault_ms)
+        t_service = self.time_to_service(probe_path, fault_ms, fault_done_ms)
 
         if kind == "kill":
             subprocess.run(["docker", "start", self.c.nodes[idx]], check=True,
                            stdout=subprocess.DEVNULL)
         else:
-            subprocess.run(["docker", "network", "connect", self.args.network,
+            alias_args = [arg for alias in aliases for arg in ("--alias", alias)]
+            subprocess.run(["docker", "network", "connect", *alias_args, self.args.network,
                             self.c.nodes[idx]], check=True, stdout=subprocess.DEVNULL)
         restart_ms = now_ms()
         deadline = time.monotonic() + 20
@@ -338,6 +378,10 @@ class Experiment:
 
         leader_now = self.c.wait_leader(timeout=5) or leader
         new_term = (self.c.status(leader_now) or {}).get("term", -1)
+        stop.set()
+        thread.join()
+
+        t_elect = self.time_to_elect(timeline, fault_ms, pre_term)
         print(f"  seed={seed}: t_elect={t_elect}ms ttr_service={t_service}ms "
               f"ttr_replica={t_replica}ms term {pre_term}->{new_term}")
         if not converged and kind == "partition":
@@ -351,7 +395,20 @@ class Experiment:
                 t_elect if t_elect is not None else "na",
                 t_service if t_service is not None else "na",
                 t_replica, pre_term, new_term,
-                str(converged).lower()]
+                str(converged).lower(), fault_cmd_ms, restart_ms]
+
+    def wait_probe_started(self, probe_path: Path, timeout: float) -> bool:
+        """Wait until the probe logged its first write."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with probe_path.open(newline="") as f:
+                    if any(csv.DictReader(f)):
+                        return True
+            except FileNotFoundError:
+                pass
+            time.sleep(0.05)
+        return False
 
     def wait_probe_recovery(self, probe_path: Path, fault_ms: int, timeout: float) -> bool:
         """Wait until the probe logged a write that finished after the fault."""
@@ -368,19 +425,22 @@ class Experiment:
             time.sleep(0.05)
         return False
 
-    def time_to_service(self, probe_path: Path, fault_ms: int) -> int | None:
+    def time_to_service(self, probe_path: Path, fault_ms: int, fault_done_ms: int) -> int | None:
         """When the probe next completed a write after the fault.
 
         The probe is sequential, so the first completion after the fault is the
         moment the cluster was serving writes again (the op in flight at fault
-        time is the one that spans the outage).
+        time is the one that spans the outage). Completions are taken after
+        fault_done_ms: writes that end while the fault command runs were served
+        before the fault took effect.
         """
         fault_ns = fault_ms * 1_000_000
+        done_ns = fault_done_ms * 1_000_000
         first_end = None
         with probe_path.open(newline="") as f:
             for row in csv.DictReader(f):
                 end = int(row["end_ns"])
-                if end > fault_ns and (first_end is None or end < first_end):
+                if end > done_ns and (first_end is None or end < first_end):
                     first_end = end
         return (first_end - fault_ns) // 1_000_000 if first_end else None
 
@@ -388,9 +448,16 @@ class Experiment:
         """ms until the restarted node has applied everything the leader committed."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            leader = self.c.leader()
-            if leader:
-                commit = (self.c.status(leader) or {}).get("commit_index")
+            # the returning node may still claim leadership at its old term
+            leaders = []
+            for p in self.c.ports:
+                if p == node_port:
+                    continue
+                st = self.c.status(p)
+                if st and st.get("is_leader"):
+                    leaders.append(st)
+            if leaders:
+                commit = max(leaders, key=lambda st: st["term"]).get("commit_index")
                 applied = (self.c.status(node_port) or {}).get("last_applied")
                 if commit is not None and applied is not None and applied >= commit:
                     return now_ms() - restart_ms
@@ -398,14 +465,15 @@ class Experiment:
         return -1
 
 
-def compose_yaml(n: int) -> str:
+def compose_yaml(n: int, compose_path: Path) -> str:
+    context = Path(os.path.relpath(ROOT, compose_path.parent)).as_posix()
     peers = ",".join(f"kvraft-n{n}-node{i}:8000" for i in range(n))
     out = [f"name: mc714-n{n}", "", "services:"]
     for i in range(n):
         out += [
             f"  node{i}:",
             "    build:",
-            f"      context: {ROOT}",
+            f"      context: {context}",
             f"    container_name: kvraft-n{n}-node{i}",
             "    environment:",
             f'      NODE_ID: "{i}"',
@@ -430,24 +498,31 @@ def compose_yaml(n: int) -> str:
     return "\n".join(out)
 
 
+@contextmanager
+def generated_cluster(args, n: int):
+    """Generate compose-n<N>.yaml, bring the cluster up, and tear it down on exit."""
+    compose_path = ROOT / args.out / f"compose-n{n}.yaml"
+    compose_path.parent.mkdir(parents=True, exist_ok=True)
+    compose_path.write_text(compose_yaml(n, compose_path))
+    c = Cluster(ports=[9000 + i for i in range(n)],
+                nodes=[f"kvraft-n{n}-node{i}" for i in range(n)],
+                compose_file=compose_path)
+    c.compose("up", "-d", "--build")
+    try:
+        if not c.wait_stable(timeout=30):
+            sys.exit(f"cluster did not converge for N={n}")
+        yield c
+    finally:
+        c.compose("down", "-v", check=False)
+
+
 def run_sweep(args) -> None:
     for n in args.sizes:
         print(f"== N={n}")
-        compose_path = ROOT / args.out / f"compose-n{n}.yaml"
-        compose_path.parent.mkdir(parents=True, exist_ok=True)
-        compose_path.write_text(compose_yaml(n))
-        c = Cluster(ports=[9000 + i for i in range(n)],
-                    nodes=[f"kvraft-n{n}-node{i}" for i in range(n)],
-                    compose_file=compose_path)
-        exp = Experiment(args, c, f"sweep-n{n}")
-        c.compose("up", "-d", "--build")
-        try:
-            if not c.wait_stable(timeout=30):
-                sys.exit(f"cluster did not converge for N={n}")
+        with generated_cluster(args, n) as c:
+            exp = Experiment(args, c, f"sweep-n{n}")
             exp.bench("warmup", c.peers, 0, record=False)  # discard cold-start run
             exp.seeds(f"n{n}", c.peers)
-        finally:
-            c.compose("down", "-v", check=False)
 
 
 def main() -> None:
@@ -459,7 +534,7 @@ def main() -> None:
     p.add_argument("--ops", type=int, default=40)
     p.add_argument("--poll", type=float, default=0.05, help="status poll interval (s)")
     p.add_argument("--out", default="scripts/experiments")
-    p.add_argument("--n", type=int, default=3, help="cluster size for non-sweep runs")
+    p.add_argument("--n", type=int, help="bring up an N-node cluster (default: use compose.yaml)")
     p.add_argument("--compose-file", default="compose.yaml")
     p.add_argument("--network", default="mc714_raftnet")
     p.add_argument("--delay", default="50ms")
@@ -475,15 +550,24 @@ def main() -> None:
         run_sweep(args)
         return
 
-    c = Cluster(ports=[9000 + i for i in range(args.n)],
-                nodes=[f"kvraft-node{i}" for i in range(args.n)],
+    if args.n is not None:
+        args.network = f"mc714-n{args.n}_raftnet"
+        with generated_cluster(args, args.n) as c:
+            run_scenario(args, c, f"{args.scenario}-n{args.n}")
+        return
+
+    c = Cluster(ports=[9000 + i for i in range(3)],
+                nodes=[f"kvraft-node{i}" for i in range(3)],
                 compose_file=args.compose_file)
     if c.wait_leader(timeout=5) is None:
         sys.exit("cluster not reachable (docker compose up -d)")
     if not c.wait_stable():
         sys.exit("cluster did not converge (all nodes, same term/leader)")
+    run_scenario(args, c, args.scenario)
 
-    exp = Experiment(args, c, args.scenario)
+
+def run_scenario(args, c: Cluster, name: str) -> None:
+    exp = Experiment(args, c, name)
     if args.scenario == "baseline":
         exp.baseline()
     elif args.scenario == "netem":

@@ -1,4 +1,0 @@
-seed,fault_unix_ms,time_to_elect_ms,ttr_service_ms,ttr_replica_ms,pre_term,new_term,converged
-1,1794243718556,516,2065,10,1,10,false
-2,1794243755301,151,1565,-1,1,95,false
-3,1794243851652,381,1266,10,1,10,false
