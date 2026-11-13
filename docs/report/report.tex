@@ -86,20 +86,16 @@ The remainder of this report is organized as follows. Section~\ref{sec:model} st
 % ===========================================================================
 This section describes the assumptions made when implementing Raft and the KV service on top of it. We considered a fixed set of $N$ servers that talk to each other, plus any number of clients. These server nodes are both KV-store servers and Raft peers. Clients come and go and only send requests. The assumptions listed here are used when arguing correctness and progress in Section~\ref{sec:correct}.
 
-\subsection{Timing model}
-\label{sec:model-timing}
+\paragraph{Timing model}
 Raft is partially synchronous. It does not know in advance any hard limit on message delay or on how long a node takes to execute a step, but timeouts and heartbeats managed by local timers are used to detect failures and guarantee progress. Safety does not depend on timing, but progress does depend on timeout constants, namely: heartbeats every 150\,ms, election timeouts of 500--700\,ms, peer RPCs bounded at 800\,ms and client requests at 2\,s.
 
-\subsection{Channels}
-\label{sec:model-channels}
+\paragraph{Channels}
 Each pair of nodes has its own connection, and messages are addressed to one specific node and there is no broadcast medium. Raft communication happens via remote procedure calls, and client-server interaction with the KV-store service layer is done with HTTP requests. We assume that a channel can lose, delay, duplicate and reorder messages, and that a message may take arbitrarily long or never arrive. Retransmission and retries are the client's job, not the channel's. 
 
-\subsection{Failures}
-\label{sec:model-failures}
+\paragraph{Failures}
 It is assumed that a node can crash and later restart, losing its volatile state but keeping what it wrote to disk. The network can also split into partitions, for a while or forever. We do not consider Byzantine faults; messages are not forged or corrupted. Raft guarantees correctness in (and thus limits progress to) situations in which, with $N$ replicas, no more than $\lfloor (N-1)/2 \rfloor$ of them fail concurrently.
 
-\subsection{Clocks, persistence and restart}
-\label{sec:model-persistence}
+\paragraph{Clocks, persistence and restart}
 Raft does not assume synchronized clocks, and no algorithm step reads wall-clock time; local monotonic clocks are used only to measure timeouts.  Before a node replies to a request or acts on one, it writes to disk what it needs after a crash: the current term, the vote, the log and the last included snapshot index.  Each write goes to a temporary file that is then renamed, so a crash in the middle of a write cannot leave truncated state.  On restart the node reloads those files and resets only its volatile state, coming back as a follower.
 
 % ===========================================================================
