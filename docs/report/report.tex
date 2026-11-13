@@ -169,7 +169,7 @@ The nodes are configured through environment variables. The \texttt{compose.yaml
 
 % This configurability also allows for the same code to run unchanged between the test harness and the container setup: in the tests the nodes are wired over the simulated \texttt{labrpc} network, while in the deployment they are wired over real TCP, and the difference is entirely in how the peer endpoints are created. In the code, this is achieved by having Raft and the KV service depend only on a one-method interface for communication, \texttt{RPCClient}, which both \texttt{labrpc.ClientEnd} (the in-memory simulated network) and \texttt{labrpc.TCPEnd} (a \texttt{net/rpc} client over TCP with a dial and a call deadline) implement.  The test suite exercises exactly the same protocol code that runs in deployment, only over a network that can be told to drop, delay and reorder messages at will.
 
-Clients have their own communication channel, separate from the one used by Raft, via HTTP to the published ports, over the endpoints described in Table~\ref{tab:endpoints}. The \texttt{Clerk} in the client library remembers the node it last got an answer from and, on \texttt{ErrWrongLeader}, advances to the next server and retries.  Followers answer read and write requests with HTTP \texttt{421} and \texttt{ErrWrongLeader} rather than forwarding them, so leader discovery is entirely client-side.  Every request carries a \texttt{(ClientId, Seq)} pair so that retried requests are answered from a cache instead of being applied twice.
+Clients have their own communication channel, separate from the one used by Raft, via HTTP over the endpoints described in Table~\ref{tab:endpoints}. The \texttt{Clerk} in the client library remembers the node it last got an answer from and, if it got back en error, advances to the next server and retries. Followers answer read and write requests with HTTP \texttt{421} and \texttt{ErrWrongLeader} rather than forwarding them, so leader discovery is entirely client-side.  Every request carries a \texttt{(ClientId, Seq)} pair so that retried requests are answered from a cache instead of being applied twice.
 
 The HTTP API also exposes a \texttt{/status} endpoint that reports the term, the observed leader, the commit, last-log and applied indexes, and the sizes of the Raft state and snapshot; the experiments in Section~\ref{sec:method} poll it to derive the recovery metrics.
 
@@ -256,15 +256,7 @@ Total & & 40 & 604.1 \\
 % ===========================================================================
 \section{Experimental Methodology}\label{sec:method}
 % ===========================================================================
-The experiments run the containerized deployment of Section~\ref{sec:arch}. A driver, \texttt{scripts/experiment.py}, 
-starts each scenario from a fresh cluster, applies a load,
-injects a fault or a network condition and writes raw CSV files.
-\texttt{scripts/analysis.ipynb} turns them into the results of Section~\ref{sec:results},
-and \texttt{scripts/README.md} lists the exact commands.
-\texttt{scripts/run\_experiments.py} runs every configuration
-of Section~\ref{sec:method-config} in sequence and records the environment.
-All nodes run on one host (Table~\ref{tab:env}),
-so they are logical nodes and not independent failure domains (Section~\ref{sec:limits}).
+The experiments run the containerized deployment of Section~\ref{sec:arch}. A driver, \texttt{scripts/experiment.py}, starts each scenario from a fresh cluster, applies a load, injects a fault or a network condition and writes raw CSV files. \texttt{scripts/analysis.ipynb} turns them into the results of Section~\ref{sec:results}, and \texttt{scripts/README.md} lists the exact commands. \texttt{scripts/run\_experiments.py} runs every configuration of Section~\ref{sec:method-config} in sequence. All nodes run on the same environment detailed in Table~\ref{tab:env}.
 
 \begin{table}[h]
 \centering
@@ -287,14 +279,7 @@ Warm-up & 1 discarded run (sweep) \\
 \end{table}
 
 \subsection{Workload and scenarios}\label{sec:method-scenarios}
-The load generator, \texttt{cmd/kvbench}, runs $C$ clients, each with its own \texttt{Clerk}, 
-that send one operation and wait for the reply before sending the next. 
-Throughput is close to $C/\bar{L}$ for a mean latency $\bar{L}$:
-it measures how fast the cluster answers a fixed set of clients, not its peak capacity. 
-Each operation picks one of five keys: half are writes (\texttt{Append} with probability 0.4, \texttt{Put} with 0.1) 
-and half are \texttt{Get}s. Each client derives its random generator from the run's seed and its index,
-so the seed fixes the operations of every client in every scenario. 
-Throughput and latency are computed before the linearizability check runs.
+The load generator, \texttt{cmd/kvbench}, runs $C$ clients, each with its own \texttt{Clerk}, that send one operation and wait for the reply before sending the next. Throughput is close to $C/\bar{L}$ for a mean latency $\bar{L}$: it measures how fast the cluster answers a fixed set of clients, not its peak capacity. Each operation picks one of five keys: half are writes (\texttt{Append} with probability 0.4, \texttt{Put} with 0.1) and half are \texttt{Get}s. Each client derives its random generator from the run's seed and its index, so the seed fixes the operations of every client in every scenario. Throughput and latency are computed before the linearizability check runs.
 
 Faults are injected from outside the nodes:
 \begin{itemize}
