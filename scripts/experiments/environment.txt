@@ -1,0 +1,12 @@
+2026-11-13T02:25:13-03:00
+CPU 13th Gen Intel(R) Core(TM) i5-1334U, 12 threads
+total        used        free      shared  buff/cache   available
+Mem:           7.6Gi       864Mi       5.1Gi        49Mi       1.8Gi       6.8Gi
+Swap:          2.0Gi          0B       2.0Gi
+Linux 6.6.87.2-microsoft-standard-WSL2
+Docker 29.9.2
+Docker Compose version v5.6.1
+go version go1.22.2 linux/amd64
+Python 3.12.3
+seeds=10 ops/client=200 pause=60s
+turbo boost disabled (Windows max processor state 99%)
