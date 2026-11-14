@@ -343,13 +343,13 @@ No fault & 3 & 1671 & 4.5 & 7.1 & 9.1 \\
 
 With no artificially injected network faults or delay, three nodes sustain 1671 ops/s. Growing the cluster appears to considerably worsen throughput, with a 29\,\% drop from 3 to 5 nodes and a further 19\,\% from 5 to 7. Latency is also considerably affected. Although expected, the scale of the effect of having to coordinate more nodes was surprising.
 
-Adding a 50\,ms delay on the network raises the median latency to 152\,ms, almost exactly the $3d=150$\,ms that one replication round trip plus the reply predicts, and throughput falls to 51\,ops/s, which matches the expected relationship of $\text{throughput} = N_\text{clients} / \text{latency} =8/0.152$. Doubling the delay doubles the effect on both numbers (302\,ms, 26\,ops/s).
+Adding a 50\,ms delay on the network raises the median latency to 152\,ms, almost exactly three times the delay that one replication round trip plus the reply predicts, and throughput falls to 51\,ops/s, which matches the expected relationship of $\text{throughput} = N_\text{clients} / \text{latency} =8/0.152$. Doubling the delay doubles the effect on both numbers (302\,ms, 26\,ops/s).
 
 Adding loss to the network appears to leave the median latency untouched, but the occasional retransmissions show themselves on the tail. Compared the 99th percentile latencies from the no-fault scenarios, we see a big jump: p99 goes from 18.2\,ms (worst no-fault p99 latency) to 210\,ms at 2\,\% loss  and to 374\,ms at 5\,\% loss.
 
 \subsection{Recovery from a leader fault}
 
-Table~\ref{tab:recovery} shows the mean recovery times from two possible leader faults.
+Table~\ref{tab:recovery} shows the mean recovery times from two possible leader faults: a crash and a network disconnect. Figure~\ref{fig:leader-fault} shows the timeline of one representative crash. Throughput drops to zero at the fault and returns once the new leader is elected, while the writes issued during the outage are the ones that inflate the client-visible latency.
 
 \begin{table}[h]
 \centering
@@ -372,6 +372,12 @@ Disconnect & 3 & 1571 $\pm$ 1380 & 3162 $\pm$ 1611 & 849 $\pm$ 447 \\
 \end{tabular}
 \end{table}
 
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{figs/leader-fault-timeline.pdf}
+\caption{One representative leader-crash run ($N=5$, seed 5): writes completed per second by the availability probe (top) and latency of each write (bottom). The dashed line marks the leader crash; the dotted line marks the election of the new leader.}
+\label{fig:leader-fault}
+\end{figure}
 
 It was observed that, on both faults, the time to elect appears much more stable for five and seven nodes, at 784\,$\pm$\,36 and 774\,$\pm$\,47\,ms; at three nodes, on the other hand, it is 1243\,$\pm$\,1089\,ms. The elecetion algorithm itself shouldn't be slower for any number of nodes; a possible explanation for this is a higher probability of having split-votes with fewer nodes. The typical election is therefore around 0.8\,s, which accounts for the 500\,ms election timeout plus randomisation, the delay of the heartbeat detector and the 50\,ms polling resolution. The standard deviation helps us observe how often that typical case fails.
 
