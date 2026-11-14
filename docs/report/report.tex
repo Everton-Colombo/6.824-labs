@@ -389,16 +389,8 @@ TTR-replica, which measures the amount of time it takes for a recovered node to 
 % ===========================================================================
 \section{Limitations}\label{sec:limits}
 % ===========================================================================
-A new leader does not append the empty no-op entry that Raft prescribes at the start of each term~\cite{raft2014},
-so entries that the previous leader had already replicated but not yet committed stay uncommitted until a client sends a new command (Section~\ref{sec:algs-replication}).
+While developing and testing this project, a number of limitations were identified. In the raft implementation, a new leader does not append the no-op entry that the paper prescribes at the start of each term \cite{raft2014}, so entries from earlier terms are committed only when a client sends a new command. There is no "PreVote" and no "check-quorum" step when triggering elections, so an isolated follower inflates its term and forces an election when it returns, and an isolated leader does not step down. The Raft state and the snapshot are written to two files, each replaced atomically but not together, so a crash between the two writes can leave them out of step. Finally, in our deployment setup, all nodes share one host, so they are not independent failure domains; for replication to be effective, the probability of nodes failing should be independent of one another.
 
-We also did not implement PreVote and check-quorum, two common extensions that deal with isolated nodes. Without them, an isolated follower keeps increasing its term and, when it comes back,
-forces an unnecessary election. An isolated leader keeps accepting requests it can never commit.
-
-The Raft state and the snapshot are saved in one call, but to two separate files. If the node crashes between the two writes, it can end up with a trimmed log next to an older snapshot,
-silently missing the operations in between.
-
-Finally, all nodes share one host, so they are not independent failure domains, while replication is only effective when nodes fail independently of one another.
 
 % ===========================================================================
 \section{Conclusion and Future Work}
