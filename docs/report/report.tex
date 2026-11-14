@@ -375,7 +375,7 @@ Disconnect & 3 & 1571 $\pm$ 1380 & 3162 $\pm$ 1611 & 849 $\pm$ 447 \\
 \begin{figure}[h]
 \centering
 \includegraphics[width=\columnwidth]{figs/leader-fault-timeline.pdf}
-\caption{One representative leader-crash run ($N=5$, seed 5): writes completed per second by the availability probe (top) and latency of each write (bottom). The dashed line marks the leader crash; the dotted line marks the election of the new leader.}
+\caption{One representative leader-crash run ($N=5$, seed 5): writes completed per second (top) and latency of each write (bottom).}
 \label{fig:leader-fault}
 \end{figure}
 
@@ -393,11 +393,14 @@ While developing and testing this project, a number of limitations were identifi
 
 
 % ===========================================================================
-\section{Conclusion and Future Work}
+\section{Conclusion}
 \label{sec:conclusion}
 % ===========================================================================
-\todo{Recap: two algorithms, correctness under faults, performance cost. Future work: PreVote/check-quorum, batching, 
-lease-based reads, incremental snapshots, message accounting, execution across multiple machines.}
+This project set out to implement Raft with a key-value system on top of it, and to measure what its fault tolerance properties cost in terms of system performance. All tests from the inherited MIT 6.824 test suite passed, and the deployed system remained linearizable in every fault scenario we exercised.
+
+Under normal operation, three nodes sustained 1671\,ops/s with a median latency of 4.5\,ms. Network delay and loss significantly impacted system latency and throughput. Leader crashes were typically detected and recovered from in about 0.8\,s, but the client-visible recovery took 2.1 to 3.2\,s, dominated by client-defined timeout policies.
+
+Possible goals for future works include fixing the limitations listed in Section~\ref{sec:limits}.
 
 
 \newpage
