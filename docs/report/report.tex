@@ -299,8 +299,6 @@ from the fault until some node reports being leader in a newer term. It should b
 since a follower waits that long without heartbeats before starting an election, which usually succeeds in its first round. The probe gives us the time to recover service (\emph{TTR-service}):
 the time from the fault until its first write that completes after it. It can be much longer than the election,
 since a client whose request went to the old leader only tries another node after its 2\,s request timeout (Section~\ref{sec:model}).
-We also count elections that start while the leader is still running, which happen when its heartbeats arrive too late, for example under delay or loss.
-The candidate's newer term makes the running leader step down, so each of these elections leaves the cluster without a leader until it ends, even though no node has failed.
 
 For log replication, the main question is what it costs to agree on every operation. This cost shows in the throughput and the 50th, 95th and 99th latency percentiles of each run.
 Since each client waits for a reply before its next request, the throughput is set by latency, not by how many requests the cluster could handle. After a crash or a partition,
@@ -309,7 +307,8 @@ the node states also give us the time to recover a replica (\emph{TTR-replica}):
 \subsection{Configurations}\label{sec:method-config}
 Each parameter was tested at three levels while the others kept their default value (no delay, no loss, three nodes): a delay of 0, 50 or 100\,ms, a loss rate of 0, 2 or 5\,\%,
 and clusters of 3, 5 or 7 nodes. The cluster size was varied not only in the normal scenario but also in the crash and partition scenarios.
-Each of these configurations ran with the same ten seeds, so all of them receive the same sequences of operations, and we report the median over the seeds.
+Each of these configurations ran with the same ten seeds, so all of them receive the same sequences of operations.
+For throughput and latency we report the median of the ten runs, and for recovery times their mean and standard deviation.
 
 % ===========================================================================
 \section{Results}
