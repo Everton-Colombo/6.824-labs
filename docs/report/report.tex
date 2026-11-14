@@ -256,7 +256,9 @@ Total & & 40 & 604.1 \\
 % ===========================================================================
 \section{Experimental Methodology}\label{sec:method}
 % ===========================================================================
-The experiments run the containerized deployment of Section~\ref{sec:arch}. A driver, \texttt{scripts/experiment.py}, starts each scenario from a fresh cluster, applies a load, injects a fault or a network condition and writes raw CSV files. \texttt{scripts/analysis.ipynb} turns them into the results of Section~\ref{sec:results}, and \texttt{scripts/README.md} lists the exact commands. \texttt{scripts/run\_experiments.py} runs every configuration of Section~\ref{sec:method-config} in sequence. All nodes run on the same environment detailed in Table~\ref{tab:env}.
+All experiments run on the containerized deployment of Section~\ref{sec:arch}, with every node on the same machine (Table~\ref{tab:env}). A single script, \texttt{scripts/run\_experiments.py},
+runs every configuration of Section~\ref{sec:method-config}, each on a fresh cluster, and saves the raw results. \texttt{scripts/README.md} explains how to run it,
+and \texttt{scripts/analysis.ipynb} turns the results into the tables of Section~\ref{sec:results}.
 
 \begin{table}[h]
 \centering
@@ -266,80 +268,48 @@ The experiments run the containerized deployment of Section~\ref{sec:arch}. A dr
 \toprule
 Item & Value \\
 \midrule
-Hardware & Intel Core i5--1334U (12 threads), turbo boost disabled; 7.6\,GiB RAM \\
+Hardware & Intel Core i5-1334U, turbo boost disabled; 7.6\,GiB RAM \\
 Operating system & Windows 11, WSL2 (Linux 6.6.87.2) \\
 Docker / Compose & 29.9.2 / 5.6.1 \\
 Go / Python & 1.22.2 / 3.12.3 \\
 Nodes & 3, 5, 7 containers (same host) \\
 Load & 8 clients, 200 ops each \\
 Seeds & 10 per configuration \\
-Warm-up & 1 discarded run (sweep) \\
+Warm-up & 1 discarded run before the fault-free runs with 3, 5 and 7 nodes \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Workload and scenarios}\label{sec:method-scenarios}
-The load generator, \texttt{cmd/kvbench}, runs $C$ clients, each with its own \texttt{Clerk}, that send one operation and wait for the reply before sending the next. Throughput is close to $C/\bar{L}$ for a mean latency $\bar{L}$: it measures how fast the cluster answers a fixed set of clients, not its peak capacity. Each operation picks one of five keys: half are writes (\texttt{Append} with probability 0.4, \texttt{Put} with 0.1) and half are \texttt{Get}s. Each client derives its random generator from the run's seed and its index, so the seed fixes the operations of every client in every scenario. Throughput and latency are computed before the linearizability check runs.
+The load comes from \texttt{cmd/kvbench}, a small benchmark client that acts as the users of the key/value service. It runs eight clients, and each of them sends 200 operations,
+waiting for the reply to one before sending the next. Half of the operations are writes and half are reads, all on the same five keys.
 
-Faults are injected from outside the nodes:
-\begin{itemize}
-\item \emph{Delay and loss}: \texttt{tc netem} adds a delay $d$ or a loss probability $p$ to every packet a container sends. 
-A write crosses three delayed hops (leader to followers, back, and leader to client), 
-so it should take about $3d$ longer, while loss slows only the operations that wait for a TCP retransmission 
-(at least Linux's minimum timeout of 200\,ms).
-\item \emph{Leader crash}: \texttt{docker stop} on the leader (its volume is kept), 
-load on the majority, restart, catch-up, and load on the full cluster.
-\item \emph{Partition}: the same sequence, but the leader is isolated with \texttt{docker network disconnect}.
-On reconnection the driver restores the container's DNS aliases, 
-which Docker drops and \texttt{compose.yaml} uses to name the peers.
-\end{itemize}
-Any scenario can also run on a generated cluster of $N$ nodes.
-During fault runs, a \emph{probe} writes one key at a time, pausing 20\,ms between writes, 
-and logs when each write starts and ends. A \emph{timeline} polls \texttt{/status} on every node every 50\,ms, 
-from one second before the fault to the end of the run.
+We ran this load in four scenarios, chosen to cover the failures assumed in Section~\ref{sec:model}. The \emph{normal} scenario, where nothing goes wrong, gives us a reference.
+In the \emph{delay and loss} scenario, \texttt{tc netem} delays the packets that each container sends or drops a fraction of them. In the \emph{crash} scenario,
+we stop the leader's container (\texttt{docker stop}), run the load on the remaining nodes once they have elected a new leader, and then restart the old leader and wait for it to catch up.
+The \emph{partition} scenario follows the same steps, except that the leader is cut off from the network (\texttt{docker network disconnect}) instead of stopped, and later reconnected.
+
+In the crash and partition scenarios, we also measure how long the cluster takes to recover from the fault. For that, a separate client, the \emph{probe},
+keeps writing from before the fault until the service returns, waiting for each write to finish before sending the next, and logs when each one starts and ends. Meanwhile,
+the experiment script asks every node for its state through \texttt{/status} (Section~\ref{sec:arch}) every 50\,ms.
 
 \subsection{Metrics}\label{sec:method-metrics}
-\begin{table}[ht]
-\centering
-\small
-\setlength{\tabcolsep}{3pt}
-\caption{Metrics, grouped by the algorithm they evaluate}\label{tab:metrics}
-\begin{tabular}{@{}p{22mm}p{18mm}p{42mm}@{}}
-\toprule
-Metric & Source & Definition \\
-\midrule
-\multicolumn{3}{@{}l}{\emph{Leader election}} \\
-Time to elect & timeline & fault instant $\rightarrow$ first sample with a leader in a higher term \\
-TTR-service & probe & fault instant $\rightarrow$ end of the first write that completes after the fault took effect \\
-Leader churn & timeline & leader changes and term growth during a run \\
-Retry cost & bench & attempts per operation; share of attempts answered with HTTP 421 \\
-\multicolumn{3}{@{}l}{\emph{Log replication}} \\
-Throughput & bench & completed operations / wall time \\
-p50, p95, p99 & bench & latency percentiles of all operations of a run \\
-TTR-replica & timeline & heal instant $\rightarrow$ returning node has applied the leader's commit index \\
-\bottomrule
-\end{tabular}
-\end{table}
+For leader election, the main question is how long the cluster stays without a leader. From the node states we measure the \emph{time to elect},
+from the fault until some node reports being leader in a newer term. It should be close to one election timeout (500 to 700\,ms, Section~\ref{sec:algs-election}),
+since a follower waits that long without heartbeats before starting an election, which usually succeeds in its first round. The probe gives us the time to recover service (\emph{TTR-service}):
+the time from the fault until its first write that completes after it. It can be much longer than the election,
+since a client whose request went to the old leader only tries another node after its 2\,s request timeout (Section~\ref{sec:model}).
+We also count elections that start while the leader is still running, which happen when its heartbeats arrive too late, for example under delay or loss.
+The candidate's newer term makes the running leader step down, so each of these elections leaves the cluster without a leader until it ends, even though no node has failed.
 
-Table~\ref{tab:metrics} defines the metrics. 
-Percentiles are used because faults and lost packets slow only a few operations, which the mean would hide. 
-Time to elect should be close to one election timeout (500--700\,ms, Section~\ref{sec:algs-election}). 
-The fault instant is taken just before the \texttt{docker} command, since the fault takes effect while it runs, 
-and the resolution is the 50\,ms polling period. TTR-service is the outage seen by a client: 
-it includes the client's 2\,s HTTP timeout when the write in flight had already reached the old leader. 
-TTR-replica is measured against the leader with the highest term among the other nodes, 
-because a node returning from a partition may still claim to lead its old term. 
-Leader churn counts elections that no crash caused, i.e.\ false suspicions of the heartbeat failure detector, 
-which appear when Raft's timing requirement (broadcast time much smaller than the election timeout~\cite{raft2014}) 
-breaks. Retry cost mostly reflects leader discovery (each \texttt{Clerk} starts at node~0) 
-and clients giving up on a slow leader, so leader churn, not retries, indicates that the leader changed.
+For log replication, the main question is what it costs to agree on every operation. This cost shows in the throughput and the 50th, 95th and 99th latency percentiles of each run.
+Since each client waits for a reply before its next request, the throughput is set by latency, not by how many requests the cluster could handle. After a crash or a partition,
+the node states also give us the time to recover a replica (\emph{TTR-replica}): how long the returning node takes to apply everything the new leader had committed.
 
-\subsection{Configurations and correctness checks}\label{sec:method-config}
-Each parameter is varied at three levels with the others at their baseline values: 
-netem delay $d \in \{0, 50, 100\}$\,ms, loss $p \in \{0, 2, 5\}$\,\%, 
-and cluster size $N \in \{3,5,7\}$ for the run without faults, the leader crash and the partition. 
-Delay and loss use $N=3$, and the run without faults on \texttt{compose.yaml} is the level 0 of both. 
-Every configuration runs with the same seeds $1,\dots,10$, and we report medians over seeds.
+\subsection{Configurations}\label{sec:method-config}
+Each parameter was tested at three levels while the others kept their default value (no delay, no loss, three nodes): a delay of 0, 50 or 100\,ms, a loss rate of 0, 2 or 5\,\%,
+and clusters of 3, 5 or 7 nodes. The cluster size was varied not only in the normal scenario but also in the crash and partition scenarios.
+Each of these configurations ran with the same ten seeds, so all of them receive the same sequences of operations, and we report the median over the seeds.
 
 % ===========================================================================
 \section{Results}
@@ -414,7 +384,16 @@ Partition    & \(349 \pm 185\)\,ms & \(1632 \pm 404\)\,ms & not applicable \\
 % ===========================================================================
 \section{Limitations}\label{sec:limits}
 % ===========================================================================
-While developing and testing this project, a number of limitations were identified. In the raft implementation, a new leader does not append the no-op entry that the paper prescribes at the start of each term \cite{raft2014}, so entries from earlier terms are committed only when a client sends a new command. There is no "PreVote" and no "check-quorum" step when trigerring elections, so an isolated follower inflates its term and forces an election when it returns, and an isolated leader does not step down. The Raft state and the snapshot are written to two files, each replaced atomically but not together, so a crash between the two writes can leave them out of step. Finally, in our deployment setup, all nodes share one host, so they are not independent failure domains; for replication to be effective, the probability of nodes failing should be independent of one another.
+A new leader does not append the empty no-op entry that Raft prescribes at the start of each term~\cite{raft2014},
+so entries that the previous leader had already replicated but not yet committed stay uncommitted until a client sends a new command (Section~\ref{sec:algs-replication}).
+
+We also did not implement PreVote and check-quorum, two common extensions that deal with isolated nodes. Without them, an isolated follower keeps increasing its term and, when it comes back,
+forces an unnecessary election. An isolated leader keeps accepting requests it can never commit.
+
+The Raft state and the snapshot are saved in one call, but to two separate files. If the node crashes between the two writes, it can end up with a trimmed log next to an older snapshot,
+silently missing the operations in between.
+
+Finally, all nodes share one host, so they are not independent failure domains, while replication is only effective when nodes fail independently of one another.
 
 % ===========================================================================
 \section{Conclusion and Future Work}
